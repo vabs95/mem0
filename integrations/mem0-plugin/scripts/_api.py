@@ -54,8 +54,10 @@ def _request_json(
 def _self_hosted_body(body: dict[str, Any]) -> dict[str, Any]:
     mapped = dict(body)
     app_id = mapped.pop("app_id", None)
-    if app_id and not mapped.get("agent_id"):
-        mapped["agent_id"] = app_id
+    if app_id:
+        metadata = mapped.setdefault("metadata", {}) or {}
+        metadata["project"] = app_id
+        mapped["metadata"] = metadata
     return mapped
 
 
@@ -81,7 +83,7 @@ def _self_hosted_filters(value: Any) -> Any:
 
     mapped: dict[str, Any] = {}
     for key, item in flat.items():
-        mapped["agent_id" if key == "app_id" else key] = _self_hosted_filters(item)
+        mapped["project" if key == "app_id" else key] = _self_hosted_filters(item)
     return mapped
 
 
