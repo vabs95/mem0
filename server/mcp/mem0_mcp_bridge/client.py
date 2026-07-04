@@ -7,7 +7,7 @@ import httpx
 
 
 class Mem0SelfHostedClient:
-    def __init__(self, api_url: str, api_key: str, timeout: float = 15.0) -> None:
+    def __init__(self, api_url: str, api_key: str = "", timeout: float = 15.0) -> None:
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
@@ -17,6 +17,10 @@ class Mem0SelfHostedClient:
         api_url = os.environ.get("MEM0_API_URL", "http://mem0:8000")
         api_key = os.environ.get("MEM0_API_KEY") or os.environ.get("ADMIN_API_KEY", "")
         return cls(api_url=api_url, api_key=api_key)
+
+    def with_api_key(self, api_key: str) -> "Mem0SelfHostedClient":
+        """Return a new client instance using a different API key."""
+        return Mem0SelfHostedClient(api_url=self.api_url, api_key=api_key, timeout=self.timeout)
 
     @property
     def headers(self) -> dict[str, str]:
@@ -47,33 +51,30 @@ class Mem0SelfHostedClient:
             return response.json()
 
 
-def app_id_to_agent_id(payload: dict[str, Any]) -> dict[str, Any]:
-    mapped = dict(payload)
-    app_id = mapped.pop("app_id", None)
-    if app_id and not mapped.get("agent_id"):
-        mapped["agent_id"] = app_id
-    return mapped
+def build_filters(
+    *,
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    run_id: str | None = None,
+    project: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a flat filters dict that the self-hosted backend expects.
 
-
-def app_filters_to_agent_filters(value: Any) -> Any:
-    if isinstance(value, list):
-        return [app_filters_to_agent_filters(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    mapped: dict[str, Any] = {}
-    for key, item in value.items():
-        mapped["agent_id" if key == "app_id" else key] = app_filters_to_agent_filters(item)
-    return mapped
-
-
-def default_user_filter(default_user_id: str, filters: dict[str, Any] | None) -> dict[str, Any]:
-    if not filters:
-        return {"AND": [{"user_id": default_user_id}]}
-    text = str(filters)
-    if "user_id" in text or "agent_id" in text or "run_id" in text or "app_id" in text:
-        return app_filters_to_agent_filters(filters)
-    if not any(key in filters for key in ("AND", "OR", "NOT")):
-        filters = {"AND": [filters]}
-    filters = app_filters_to_agent_filters(filters)
-    filters.setdefault("AND", []).insert(0, {"user_id": default_user_id})
+    Entity IDs (user_id, agent_id, run_id) go at the top level.
+    The optional ``project`` key is also placed at the top level so
+    the vector store can filter on it as a metadata field.
+    Any ``extra`` filters are merged in as well.
+    """
+    filters: dict[str, Any] = {}
+    if user_id:
+        filters["user_id"] = user_id
+    if agent_id:
+        filters["agent_id"] = agent_id
+    if run_id:
+        filters["run_id"] = run_id
+    if project:
+        filters["project"] = project
+    if extra:
+        filters.update(extra)
     return filters
