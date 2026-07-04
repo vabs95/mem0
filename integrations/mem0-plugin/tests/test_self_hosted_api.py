@@ -28,8 +28,9 @@ def test_self_hosted_add_memory_maps_app_id_to_agent_id(monkeypatch):
 
     assert captured["url"] == "https://mem0.example.test/memories"
     assert captured["headers"]["X-api-key"] == "m0sk-test"
-    assert captured["body"]["agent_id"] == "mem0"
+    assert captured["body"]["metadata"]["project"] == "mem0"
     assert "app_id" not in captured["body"]
+    assert "agent_id" not in captured["body"]
 
 
 def test_self_hosted_search_maps_app_id_filter(monkeypatch):
@@ -55,7 +56,8 @@ def test_self_hosted_search_maps_app_id_filter(monkeypatch):
             {"query": "decisions", "filters": {"AND": [{"user_id": "demo-user"}, {"app_id": "mem0"}]}},
         )
 
-    assert captured["body"]["filters"]["agent_id"] == "mem0"
+    assert captured["body"]["filters"]["project"] == "mem0"
     assert captured["body"]["filters"]["user_id"] == "demo-user"
     assert "app_id" not in captured["body"]["filters"]
+    assert "agent_id" not in captured["body"]["filters"]
     assert "AND" not in captured["body"]["filters"]
