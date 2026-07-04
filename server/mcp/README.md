@@ -1,43 +1,71 @@
 # Mem0 Self-Hosted MCP Bridge
 
-This sidecar exposes MCP tools for the self-hosted Mem0 REST server. It keeps the
-hosted MCP tool names while forwarding requests to the self-hosted REST API.
+This sidecar exposes MCP tools for the self-hosted Mem0 REST server. It keeps the hosted MCP tool signatures while forwarding requests to the self-hosted REST API.
 
 ## Tools
 
-- `add_memory`
-- `search_memories`
-- `get_memories`
-- `get_memory`
-- `update_memory`
-- `delete_memory`
-- `delete_all_memories`
-- `list_entities`
-- `delete_entities`
+- `add_memory` (stores preferences/facts, accepts `project` and `task`/`run_id`)
+- `search_memories` (searches facts, supports filtering by `project`)
+- `get_memories` (lists user memories)
+- `get_memory` (gets a single memory)
+- `update_memory` (updates a memory)
+- `delete_memory` (deletes a memory)
+- `delete_all_memories` (deletes memories for a user/run scope)
+- `list_entities` (lists users, agents, and runs holding memories)
+- `delete_entities` (removes user, agent, or run entities)
 
 ## Run With Docker Compose
 
 From the repository root:
 
 ```bash
-MEM0_API_KEY="m0sk_..." \
-MEM0_DEFAULT_USER_ID="demo-user" \
-docker compose -f docker-compose.mem0-mcp.yaml up -d --build
+docker compose up -d --build
 ```
 
-By default the sidecar joins the `mem0_mem0_network` Docker network and calls
-`http://mem0:8000`. Override these when your deployment uses different names:
+Expose `127.0.0.1:8765` through your reverse proxy or Tailscale HTTPS endpoint, then configure MCP clients with the `/mcp` Streamable HTTP URL.
 
-```bash
-MEM0_DOCKER_NETWORK="my_mem0_network" \
-MEM0_API_URL="http://mem0:8000" \
-docker compose -f docker-compose.mem0-mcp.yaml up -d --build
+## Dynamic Client Scoping & Authentication
+
+The MCP bridge dynamically routes requests to the backend using the client's credentials and parameters sent via headers:
+
+- **Authentication**: Forwarded to the backend as `X-API-Key`.
+- **User Identity (`X-User-Id`)**: Associates memories to the developer.
+- **Source Agent (`X-Source-Agent`)**: Automatically records which agent wrote the memory (stored in `metadata.source`).
+
+### Client Configuration
+
+#### 1. Codex (JSON format)
+Configure the MCP server in your `.codex-mcp.json` or equivalent configuration:
+
+```json
+{
+  "mcpServers": {
+    "mem0": {
+      "type": "http",
+      "url": "https://<your-vps-url>:8765/mcp",
+      "bearer_token_env_var": "MEM0_API_KEY",
+      "http_headers": {
+        "X-User-Id": "seth",
+        "X-Source-Agent": "codex"
+      }
+    }
+  }
+}
+```
+*Make sure to export `MEM0_API_KEY` locally in the shell running Codex.*
+
+#### 2. Other Agents (TOML format)
+Configure using TOML:
+
+```toml
+[mcp_servers.mem0]
+url = "https://<your-vps-url>:8765/mcp"
+bearer_token_env_var = "MEM0_API_KEY"
+http_headers = { "X-User-Id" = "seth", "X-Source-Agent" = "codex" }
 ```
 
-Expose `127.0.0.1:8765` through your reverse proxy or Tailscale HTTPS endpoint,
-then configure MCP clients with the `/mcp` Streamable HTTP URL.
+## Memory Scoping
 
-## Scoping
-
-The self-hosted REST server supports `user_id`, `agent_id`, and `run_id`. The
-bridge accepts hosted-compatible `app_id` and maps it to `agent_id`.
+The self-hosted REST server supports `user_id`, `agent_id`, and `run_id`.
+- **Project Scope**: Use the `project` tool parameter. It is automatically stored inside the memory's `metadata` and is used for scoping search queries.
+- **Task Scope**: Use the `run_id` (or `task`) tool parameter to isolate memories to specific active debug sessions or tickets.
