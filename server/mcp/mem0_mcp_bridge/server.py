@@ -45,16 +45,6 @@ class _HeaderMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] in ("http", "websocket"):
             headers = dict(scope.get("headers", []))
-            # Log incoming headers (redacting Authorization)
-            logged_headers = {}
-            for k, v in headers.items():
-                k_str = k.decode().lower()
-                if k_str == "authorization":
-                    logged_headers[k_str] = "[REDACTED]"
-                else:
-                    logged_headers[k_str] = v.decode()
-            logger.info("Incoming HTTP headers: %s", logged_headers)
-
             # Extract Bearer token or raw API key
             auth = headers.get(b"authorization", b"").decode().strip()
             if auth:
