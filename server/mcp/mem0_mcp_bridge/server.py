@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -8,14 +9,59 @@ from typing import Annotated, Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .client import Mem0SelfHostedClient, app_id_to_agent_id, default_user_filter
+from .client import Mem0SelfHostedClient, build_filters
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(message)s")
 logger = logging.getLogger("mem0_mcp_bridge")
 
+# ---------------------------------------------------------------------------
+# Defaults from env (used as fallback when headers are absent)
+# ---------------------------------------------------------------------------
 DEFAULT_USER_ID = os.environ.get("MEM0_DEFAULT_USER_ID", "mem0-mcp")
-DEFAULT_AGENT_ID = os.environ.get("MEM0_DEFAULT_AGENT_ID") or os.environ.get("MEM0_DEFAULT_APP_ID", "")
+DEFAULT_AGENT_ID = os.environ.get("MEM0_DEFAULT_AGENT_ID", "")
+
+# ---------------------------------------------------------------------------
+# Context variables – populated per-request by ASGI middleware
+# ---------------------------------------------------------------------------
+_request_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("_request_api_key", default="")
+_request_user_id: contextvars.ContextVar[str] = contextvars.ContextVar("_request_user_id", default="")
+_request_source_agent: contextvars.ContextVar[str] = contextvars.ContextVar("_request_source_agent", default="")
+
+
+class _HeaderMiddleware:
+    """ASGI middleware that extracts per-client identity from HTTP headers.
+
+    Headers read:
+      - ``Authorization: Bearer <key>``  → forwarded to the backend as API key
+      - ``X-User-Id``                    → scopes memories to this user
+      - ``X-Source-Agent``               → auto-tagged on writes (provenance)
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in ("http", "websocket"):
+            headers = dict(scope.get("headers", []))
+            # Extract Bearer token → API key
+            auth = headers.get(b"authorization", b"").decode()
+            if auth.lower().startswith("bearer "):
+                _request_api_key.set(auth[7:].strip())
+            # Extract identity headers
+            user_id = headers.get(b"x-user-id", b"").decode().strip()
+            if user_id:
+                _request_user_id.set(user_id)
+            source = headers.get(b"x-source-agent", b"").decode().strip()
+            if source:
+                _request_source_agent.set(source)
+        await self.app(scope, receive, send)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _json_call(func, *args, **kwargs) -> str:
@@ -26,9 +72,41 @@ def _json_call(func, *args, **kwargs) -> str:
         return json.dumps({"error": type(exc).__name__, "detail": str(exc)}, ensure_ascii=False)
 
 
-def _client() -> Mem0SelfHostedClient:
-    return Mem0SelfHostedClient.from_env()
+_base_client = Mem0SelfHostedClient.from_env()
 
+
+def _client() -> Mem0SelfHostedClient:
+    """Return a client using the per-request Bearer token if present,
+    otherwise fall back to the env-configured API key."""
+    api_key = _request_api_key.get()
+    if api_key:
+        return _base_client.with_api_key(api_key)
+    return _base_client
+
+
+def _effective_user_id(user_id: str | None) -> str:
+    """Resolve the user_id: explicit arg > header > env default."""
+    return user_id or _request_user_id.get() or DEFAULT_USER_ID
+
+
+def _effective_agent_id(agent_id: str | None) -> str | None:
+    """Resolve the agent_id: explicit arg > header > env default."""
+    return agent_id or _request_source_agent.get() or DEFAULT_AGENT_ID or None
+
+
+def _source_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Inject ``source`` into metadata from the X-Source-Agent header."""
+    source = _request_source_agent.get()
+    if not source:
+        return metadata or {}
+    result = dict(metadata) if metadata else {}
+    result.setdefault("source", source)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# MCP Server
+# ---------------------------------------------------------------------------
 
 server = FastMCP(
     "mem0",
@@ -38,14 +116,23 @@ server = FastMCP(
 )
 
 
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+
 @server.tool(description="Store a new preference, fact, or conversation snippet.")
 def add_memory(
     text: Annotated[str | None, Field(default=None, description="Plain sentence summarizing what to store.")] = None,
     messages: Annotated[list[dict[str, str]] | None, Field(default=None, description="Role/content messages.")] = None,
-    user_id: Annotated[str | None, Field(default=None, description="User scope.")] = None,
-    agent_id: Annotated[str | None, Field(default=None, description="Agent scope.")] = None,
-    app_id: Annotated[str | None, Field(default=None, description="Alias for agent_id in self-hosted mode.")] = None,
+    user_id: Annotated[str | None, Field(default=None, description="User scope (default: from config header).")] = None,
+    agent_id: Annotated[
+        str | None, Field(default=None, description="Agent scope (default: from config header).")
+    ] = None,
     run_id: Annotated[str | None, Field(default=None, description="Run/session scope.")] = None,
+    project: Annotated[
+        str | None, Field(default=None, description="Project scope. Stored in metadata for filtering.")
+    ] = None,
     metadata: Annotated[dict[str, Any] | None, Field(default=None, description="Metadata JSON.")] = None,
     infer: Annotated[bool, Field(default=True, description="Whether Mem0 should extract facts.")] = True,
 ) -> str:
@@ -54,17 +141,18 @@ def add_memory(
             return json.dumps({"error": "messages_missing", "detail": "Provide text or messages."})
         messages = [{"role": "user", "content": text}]
 
-    payload = app_id_to_agent_id(
-        {
-            "messages": messages,
-            "user_id": user_id or DEFAULT_USER_ID,
-            "agent_id": agent_id or DEFAULT_AGENT_ID or None,
-            "app_id": app_id,
-            "run_id": run_id,
-            "metadata": metadata,
-            "infer": infer,
-        }
-    )
+    effective_metadata = _source_metadata(metadata)
+    if project:
+        effective_metadata["project"] = project
+
+    payload: dict[str, Any] = {
+        "messages": messages,
+        "user_id": _effective_user_id(user_id),
+        "agent_id": _effective_agent_id(agent_id),
+        "run_id": run_id,
+        "metadata": effective_metadata or None,
+        "infer": infer,
+    }
     payload = {k: v for k, v in payload.items() if v is not None}
     return _json_call(_client().request, "POST", "/memories", json_body=payload)
 
@@ -72,15 +160,25 @@ def add_memory(
 @server.tool(description="Run a semantic search over existing memories.")
 def search_memories(
     query: Annotated[str, Field(description="Natural language search query.")],
-    filters: Annotated[dict[str, Any] | None, Field(default=None, description="Structured filters.")] = None,
-    limit: Annotated[int | None, Field(default=None, description="Maximum results.")] = None,
-    top_k: Annotated[int | None, Field(default=None, description="Maximum results alias.")] = None,
+    user_id: Annotated[str | None, Field(default=None, description="User scope (default: from config header).")] = None,
+    agent_id: Annotated[str | None, Field(default=None, description="Agent scope.")] = None,
+    run_id: Annotated[str | None, Field(default=None, description="Run scope.")] = None,
+    project: Annotated[str | None, Field(default=None, description="Filter by project.")] = None,
+    filters: Annotated[dict[str, Any] | None, Field(default=None, description="Additional structured filters.")] = None,
+    top_k: Annotated[int | None, Field(default=None, description="Maximum results.")] = None,
     threshold: Annotated[float | None, Field(default=None, description="Minimum similarity score.")] = None,
 ) -> str:
+    search_filters = build_filters(
+        user_id=_effective_user_id(user_id),
+        agent_id=agent_id,
+        run_id=run_id,
+        project=project,
+        extra=filters,
+    )
     payload: dict[str, Any] = {
         "query": query,
-        "filters": default_user_filter(DEFAULT_USER_ID, filters),
-        "top_k": top_k or limit,
+        "filters": search_filters,
+        "top_k": top_k,
         "threshold": threshold,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
@@ -89,17 +187,22 @@ def search_memories(
 
 @server.tool(description="List memories using structured filters.")
 def get_memories(
-    filters: Annotated[dict[str, Any] | None, Field(default=None, description="Structured filters.")] = None,
-    page_size: Annotated[int | None, Field(default=None, description="Maximum memories to list.")] = None,
-    top_k: Annotated[int | None, Field(default=None, description="Maximum memories alias.")] = None,
+    user_id: Annotated[str | None, Field(default=None, description="User scope (default: from config header).")] = None,
+    agent_id: Annotated[str | None, Field(default=None, description="Agent scope.")] = None,
+    run_id: Annotated[str | None, Field(default=None, description="Run scope.")] = None,
+    project: Annotated[str | None, Field(default=None, description="Filter by project.")] = None,
+    top_k: Annotated[int | None, Field(default=None, description="Maximum memories to list.")] = None,
 ) -> str:
-    scoped = default_user_filter(DEFAULT_USER_ID, filters)
-    params: dict[str, Any] = {"top_k": top_k or page_size}
-    for clause in scoped.get("AND", []):
-        if isinstance(clause, dict):
-            for key in ("user_id", "agent_id", "run_id"):
-                if key in clause and isinstance(clause[key], str) and clause[key] != "*":
-                    params[key] = clause[key]
+    params: dict[str, Any] = {
+        "user_id": _effective_user_id(user_id),
+        "top_k": top_k,
+    }
+    if agent_id:
+        params["agent_id"] = agent_id
+    if run_id:
+        params["run_id"] = run_id
+    # Note: project filtering on GET /memories is not supported by the backend
+    # query params; agent should use search_memories with project filter instead.
     return _json_call(_client().request, "GET", "/memories", params=params)
 
 
@@ -112,9 +215,11 @@ def get_memory(memory_id: Annotated[str, Field(description="Memory ID.")]) -> st
 def update_memory(
     memory_id: Annotated[str, Field(description="Memory ID.")],
     text: Annotated[str, Field(description="Replacement memory text.")],
-    metadata: Annotated[dict[str, Any] | None, Field(default=None, description="Optional replacement metadata.")] = None,
+    metadata: Annotated[
+        dict[str, Any] | None, Field(default=None, description="Optional replacement metadata.")
+    ] = None,
 ) -> str:
-    payload = {"text": text}
+    payload: dict[str, Any] = {"text": text}
     if metadata is not None:
         payload["metadata"] = metadata
     return _json_call(_client().request, "PUT", f"/memories/{memory_id}", json_body=payload)
@@ -127,19 +232,17 @@ def delete_memory(memory_id: Annotated[str, Field(description="Memory ID.")]) ->
 
 @server.tool(description="Delete every memory in a user/agent/run scope.")
 def delete_all_memories(
-    user_id: Annotated[str | None, Field(default=None, description="User scope.")] = None,
+    user_id: Annotated[str | None, Field(default=None, description="User scope (default: from config header).")] = None,
     agent_id: Annotated[str | None, Field(default=None, description="Agent scope.")] = None,
-    app_id: Annotated[str | None, Field(default=None, description="Alias for agent_id.")] = None,
     run_id: Annotated[str | None, Field(default=None, description="Run scope.")] = None,
 ) -> str:
-    params = app_id_to_agent_id(
-        {
-            "user_id": user_id or DEFAULT_USER_ID,
-            "agent_id": agent_id,
-            "app_id": app_id,
-            "run_id": run_id,
-        }
-    )
+    params: dict[str, Any] = {
+        "user_id": _effective_user_id(user_id),
+    }
+    if agent_id:
+        params["agent_id"] = agent_id
+    if run_id:
+        params["run_id"] = run_id
     return _json_call(_client().request, "DELETE", "/memories", params=params)
 
 
@@ -152,27 +255,43 @@ def list_entities() -> str:
 def delete_entities(
     user_id: Annotated[str | None, Field(default=None, description="User entity to delete.")] = None,
     agent_id: Annotated[str | None, Field(default=None, description="Agent entity to delete.")] = None,
-    app_id: Annotated[str | None, Field(default=None, description="Alias for agent entity.")] = None,
     run_id: Annotated[str | None, Field(default=None, description="Run entity to delete.")] = None,
 ) -> str:
-    mapped = app_id_to_agent_id({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
-    scopes = [(key[:-3], value) for key, value in mapped.items() if value and key.endswith("_id")]
+    scopes = [(k[:-3], v) for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id}.items() if v]
     if len(scopes) != 1:
-        return json.dumps({"error": "scope_invalid", "detail": "Provide exactly one user_id, agent_id/app_id, or run_id."})
+        return json.dumps({"error": "scope_invalid", "detail": "Provide exactly one of user_id, agent_id, or run_id."})
     entity_type, entity_id = scopes[0]
     return _json_call(_client().request, "DELETE", f"/entities/{entity_type}/{entity_id}")
+
+
+# ---------------------------------------------------------------------------
+# Prompt
+# ---------------------------------------------------------------------------
 
 
 @server.prompt()
 def memory_assistant() -> str:
     return (
-        "Use Mem0 tools for long-term memory. Prefer scoped filters with user_id and app_id/agent_id. "
+        "You have access to Mem0 tools for long-term memory. "
+        "Memories are scoped by user_id (the human), agent_id (the AI agent), "
+        "and optionally by project (stored in metadata) and run_id (task/session). "
+        "Use the 'project' parameter to organize memories by project/workspace. "
         "Store durable facts, preferences, project decisions, and task learnings."
     )
 
 
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
     logger.info("Starting Mem0 self-hosted MCP bridge at %s:%s", server.settings.host, server.settings.port)
+    # Wrap the ASGI app with header-extraction middleware
+    original_app = server.streamable_http_app()
+    wrapped_app = _HeaderMiddleware(original_app)
+    # Replace the method so the server uses our wrapped app
+    server.streamable_http_app = lambda: wrapped_app  # type: ignore[method-assign]
     server.run(transport="streamable-http")
 
 

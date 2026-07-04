@@ -8,25 +8,31 @@ MCP_DIR = os.path.join(ROOT, "server", "mcp")
 if MCP_DIR not in sys.path:
     sys.path.insert(0, MCP_DIR)
 
-from mem0_mcp_bridge.client import app_id_to_agent_id, default_user_filter  # noqa: E402
+from mem0_mcp_bridge.client import build_filters  # noqa: E402
 
 
-def test_bridge_maps_app_id_to_agent_id():
-    payload = app_id_to_agent_id({"user_id": "demo-user", "app_id": "mem0", "messages": []})
+def test_build_filters_basic():
+    filters = build_filters(
+        user_id="demo-user",
+        agent_id="demo-agent",
+        run_id="demo-run",
+        project="demo-project",
+    )
 
-    assert payload["agent_id"] == "mem0"
-    assert "app_id" not in payload
+    assert filters["user_id"] == "demo-user"
+    assert filters["agent_id"] == "demo-agent"
+    assert filters["run_id"] == "demo-run"
+    assert filters["project"] == "demo-project"
 
 
-def test_bridge_default_filter_maps_app_id():
-    filters = default_user_filter("demo-user", {"AND": [{"app_id": "mem0"}]})
+def test_build_filters_with_extra():
+    extra = {"metadata": {"type": "decision"}}
+    filters = build_filters(
+        user_id="demo-user",
+        project="demo-project",
+        extra=extra,
+    )
 
-    assert {"agent_id": "mem0"} in filters["AND"]
-    assert {"app_id": "mem0"} not in filters["AND"]
-
-
-def test_bridge_default_filter_injects_user_id():
-    filters = default_user_filter("demo-user", {"metadata": {"type": "decision"}})
-
-    assert filters["AND"][0] == {"user_id": "demo-user"}
-    assert {"metadata": {"type": "decision"}} in filters["AND"]
+    assert filters["user_id"] == "demo-user"
+    assert filters["project"] == "demo-project"
+    assert filters["metadata"] == {"type": "decision"}
