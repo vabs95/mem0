@@ -44,6 +44,7 @@ _PATCH_OUT="/tmp/mem0_enforce_$$"
 trap 'rm -f "$_PATCH_OUT"' EXIT
 _MEM0_TOOL_INPUT="$TOOL_INPUT" \
 _MEM0_USER_ID="${MEM0_RESOLVED_USER_ID:-}" \
+_MEM0_AGENT_ID="${MEM0_RESOLVED_AGENT_ID:-}" \
 _MEM0_APP_ID="${MEM0_PROJECT_ID:-}" \
 _MEM0_GLOBAL_SEARCH="${MEM0_GLOBAL_SEARCH:-false}" \
 _MEM0_HANDLER="$HANDLER" \
@@ -58,19 +59,23 @@ except Exception:
 
 handler = os.environ.get("_MEM0_HANDLER", "")
 resolved_uid = os.environ.get("_MEM0_USER_ID", "")
+resolved_agent_id = os.environ.get("_MEM0_AGENT_ID", "")
 resolved_aid = os.environ.get("_MEM0_APP_ID", "")
 global_search = os.environ.get("_MEM0_GLOBAL_SEARCH", "false") == "true"
 changed = False
 
 
-def inject_top_level_identity(inp, uid, aid):
-    """Inject user_id/app_id as top-level params (for add_memory, delete_all)."""
+def inject_top_level_identity(inp, uid, aid, agent_id):
+    """Inject user_id/app_id/agent_id as top-level params (for add_memory, delete_all)."""
     changed = False
     if uid and not inp.get("user_id"):
         inp["user_id"] = uid
         changed = True
     if aid and not inp.get("app_id"):
         inp["app_id"] = aid
+        changed = True
+    if agent_id and not inp.get("agent_id"):
+        inp["agent_id"] = agent_id
         changed = True
     return changed
 
@@ -136,7 +141,7 @@ def inject_filter_identity(inp, uid, aid):
 
 
 if handler == "add_memory":
-    changed = inject_top_level_identity(inp, resolved_uid, resolved_aid)
+    changed = inject_top_level_identity(inp, resolved_uid, resolved_aid, resolved_agent_id)
 
     meta = inp.get("metadata") or {}
 
@@ -186,7 +191,7 @@ elif handler in ("search_memories", "get_memories"):
         changed = inject_filter_identity(inp, resolved_uid, resolved_aid)
 
 elif handler == "delete_all":
-    changed = inject_top_level_identity(inp, resolved_uid, resolved_aid)
+    changed = inject_top_level_identity(inp, resolved_uid, resolved_aid, resolved_agent_id)
 
 if changed:
     print(json.dumps(inp))
