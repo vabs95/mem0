@@ -55,10 +55,13 @@ class _HeaderMiddleware:
                     logged_headers[k_str] = v.decode()
             logger.info("Incoming HTTP headers: %s", logged_headers)
 
-            # Extract Bearer token → API key
-            auth = headers.get(b"authorization", b"").decode()
-            if auth.lower().startswith("bearer "):
-                _request_api_key.set(auth[7:].strip())
+            # Extract Bearer token or raw API key
+            auth = headers.get(b"authorization", b"").decode().strip()
+            if auth:
+                if auth.lower().startswith("bearer "):
+                    _request_api_key.set(auth[7:].strip())
+                else:
+                    _request_api_key.set(auth)
             # Extract identity headers
             user_id = headers.get(b"x-user-id", b"").decode().strip()
             if user_id:
