@@ -16,9 +16,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime
 
-STATS_FILE = f"/tmp/mem0_session_stats_{os.environ.get('USER', 'default')}.json"
+STATS_FILE = os.path.join(tempfile.gettempdir(), f"mem0_session_stats_{os.environ.get('USER', 'default')}.json")
 
 
 def _load() -> dict:
@@ -46,14 +47,16 @@ MAX_RECENT_IDS = 50
 
 
 def init() -> None:
-    _save({
-        "adds": 0,
-        "searches": 0,
-        "categories": [],
-        "category_counts": {},
-        "recent_ids": [],
-        "started": datetime.now().isoformat(),
-    })
+    _save(
+        {
+            "adds": 0,
+            "searches": 0,
+            "categories": [],
+            "category_counts": {},
+            "recent_ids": [],
+            "started": datetime.now().isoformat(),
+        }
+    )
 
 
 def record_add(category: str = "", memory_id: str = "") -> None:
