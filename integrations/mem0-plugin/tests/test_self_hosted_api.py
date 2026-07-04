@@ -55,5 +55,7 @@ def test_self_hosted_search_maps_app_id_filter(monkeypatch):
             {"query": "decisions", "filters": {"AND": [{"user_id": "demo-user"}, {"app_id": "mem0"}]}},
         )
 
-    assert {"agent_id": "mem0"} in captured["body"]["filters"]["AND"]
-    assert {"app_id": "mem0"} not in captured["body"]["filters"]["AND"]
+    assert captured["body"]["filters"]["agent_id"] == "mem0"
+    assert captured["body"]["filters"]["user_id"] == "demo-user"
+    assert "app_id" not in captured["body"]["filters"]
+    assert "AND" not in captured["body"]["filters"]

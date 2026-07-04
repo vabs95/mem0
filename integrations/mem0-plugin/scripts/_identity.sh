@@ -12,6 +12,16 @@
 
 _SCRIPT_DIR="$( cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd )"
 
+# Define a fallback function for python3 if only python is available (common on Windows)
+if ! command -v python3 >/dev/null 2>&1; then
+  if command -v python >/dev/null 2>&1; then
+    python3() {
+      python "$@"
+    }
+    export -f python3 2>/dev/null || true
+  fi
+fi
+
 # Resolve API key: env var > userConfig > shell profile extraction
 if [ -z "${MEM0_API_KEY:-}" ] && [ -n "${CLAUDE_PLUGIN_OPTION_API_KEY:-}" ]; then
   MEM0_API_KEY="$CLAUDE_PLUGIN_OPTION_API_KEY"

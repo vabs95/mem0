@@ -60,12 +60,27 @@ def _self_hosted_body(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _self_hosted_filters(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_self_hosted_filters(item) for item in value]
     if not isinstance(value, dict):
+        if isinstance(value, list):
+            return [_self_hosted_filters(item) for item in value]
         return value
+
+    # Flatten AND clauses if present to support flat backend filters
+    flat: dict[str, Any] = {}
+    if "AND" in value and isinstance(value["AND"], list):
+        for item in value["AND"]:
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    flat[k] = v
+        # Also include any other top-level keys that aren't logical operators
+        for k, v in value.items():
+            if k not in ("AND", "OR", "NOT"):
+                flat[k] = v
+    else:
+        flat = value
+
     mapped: dict[str, Any] = {}
-    for key, item in value.items():
+    for key, item in flat.items():
         mapped["agent_id" if key == "app_id" else key] = _self_hosted_filters(item)
     return mapped
 
@@ -90,12 +105,9 @@ def list_memories(api_key: str, body: dict[str, Any], timeout: int = 5) -> tuple
     if api_mode() == "self_hosted":
         filters = _self_hosted_filters(body.get("filters") or {})
         params: dict[str, Any] = {}
-        for item in filters.get("AND", []):
-            if not isinstance(item, dict):
-                continue
-            for key in ("user_id", "agent_id", "run_id"):
-                if key in item and isinstance(item[key], str) and item[key] != "*":
-                    params[key] = item[key]
+        for key in ("user_id", "agent_id", "run_id"):
+            if key in filters and isinstance(filters[key], str) and filters[key] != "*":
+                params[key] = filters[key]
         if "page_size" in body:
             params["top_k"] = body["page_size"]
         elif "top_k" in body:
