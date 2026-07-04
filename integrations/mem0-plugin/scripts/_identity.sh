@@ -66,6 +66,17 @@ _mem0_resolve_identity() {
 MEM0_RESOLVED_USER_ID="$(_mem0_resolve_identity)"
 export MEM0_RESOLVED_USER_ID
 
+_mem0_resolve_agent() {
+  if [ -n "${MEM0_AGENT_ID:-}" ]; then
+    printf '%s' "$MEM0_AGENT_ID"
+    return
+  fi
+  printf '%s' "codex"
+}
+
+MEM0_RESOLVED_AGENT_ID="$(_mem0_resolve_agent)"
+export MEM0_RESOLVED_AGENT_ID
+
 _MEM0_IDENTITY_ANNOTATION=""
 if [ -n "${MEM0_USER_ID:-}" ] && [ "$MEM0_USER_ID" != "${USER:-default}" ]; then
   _MEM0_IDENTITY_ANNOTATION=" (override; default: ${USER:-default})"
