@@ -9,7 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
-from .client import Mem0SelfHostedClient, app_id_to_agent_id, default_user_filter
+from .client import Mem0SelfHostedClient, app_id_to_agent_id, app_filters_to_agent_filters, default_user_filter
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(message)s")
 logger = logging.getLogger("mem0_mcp_bridge")

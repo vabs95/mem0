@@ -8,7 +8,7 @@ MCP_DIR = os.path.join(ROOT, "server", "mcp")
 if MCP_DIR not in sys.path:
     sys.path.insert(0, MCP_DIR)
 
-from mem0_mcp_bridge.client import app_id_to_agent_id, default_user_filter  # noqa: E402
+from mem0_mcp_bridge.client import app_id_to_agent_id, default_user_filter
 
 
 def test_bridge_maps_app_id_to_agent_id():
