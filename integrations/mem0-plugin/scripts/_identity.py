@@ -72,7 +72,7 @@ def resolve_user_id() -> str:
     explicit = os.environ.get("MEM0_USER_ID", "").strip()
     if explicit:
         return explicit
-    return os.environ.get("USER") or "default"
+    return os.environ.get("USER") or os.environ.get("USERNAME") or "default"
 
 
 def resolve_config() -> dict:

@@ -55,7 +55,7 @@ def _acquire_lock() -> bool:
         os.write(fd, str(os.getpid()).encode())
         os.close(fd)
         return True
-    except FileExistsError:
+    except (FileExistsError, PermissionError):
         try:
             mtime = os.path.getmtime(LOCK_FILE)
             import time
