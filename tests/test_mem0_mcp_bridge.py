@@ -9,6 +9,22 @@ if MCP_DIR not in sys.path:
     sys.path.insert(0, MCP_DIR)
 
 from mem0_mcp_bridge.client import build_filters  # noqa: E402
+from mem0_mcp_bridge.server import _effective_project  # noqa: E402
+
+
+def test_effective_project_prefers_explicit_project():
+    assert _effective_project("proj-a", "app-b") == "proj-a"
+
+
+def test_effective_project_falls_back_to_app_id_alias():
+    # app_id is mem0's hosted-API field name for the same concept (see
+    # mem0/client/main.py ENTITY_PARAMS) — the self-hosted MCP bridge must
+    # accept it too so hosted-API-style agent instructions still work here.
+    assert _effective_project(None, "app-b") == "app-b"
+
+
+def test_effective_project_none_when_neither_given():
+    assert _effective_project(None, None) is None
 
 
 def test_build_filters_basic():

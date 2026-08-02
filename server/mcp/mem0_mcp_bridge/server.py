@@ -107,6 +107,14 @@ def _source_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     return result
 
 
+def _effective_project(project: str | None, app_id: str | None) -> str | None:
+    """``app_id`` is mem0's cloud/hosted-API project field name (see
+    mem0/client/main.py ENTITY_PARAMS). Accept it here too so the same
+    agent instructions work against both the hosted MCP server and this
+    self-hosted bridge without the caller needing to know which is active."""
+    return project or app_id
+
+
 # ---------------------------------------------------------------------------
 # MCP Server
 # ---------------------------------------------------------------------------
@@ -136,6 +144,9 @@ def add_memory(
     project: Annotated[
         str | None, Field(default=None, description="Project scope. Stored in metadata for filtering.")
     ] = None,
+    app_id: Annotated[
+        str | None, Field(default=None, description="Alias for 'project' (mem0 hosted-API field name).")
+    ] = None,
     metadata: Annotated[dict[str, Any] | None, Field(default=None, description="Metadata JSON.")] = None,
     infer: Annotated[bool, Field(default=True, description="Whether Mem0 should extract facts.")] = True,
 ) -> str:
@@ -144,6 +155,7 @@ def add_memory(
             return json.dumps({"error": "messages_missing", "detail": "Provide text or messages."})
         messages = [{"role": "user", "content": text}]
 
+    project = _effective_project(project, app_id)
     effective_metadata = _source_metadata(metadata)
     if project:
         effective_metadata["project"] = project
@@ -167,6 +179,9 @@ def search_memories(
     agent_id: Annotated[str | None, Field(default=None, description="Agent scope.")] = None,
     run_id: Annotated[str | None, Field(default=None, description="Run scope.")] = None,
     project: Annotated[str | None, Field(default=None, description="Filter by project.")] = None,
+    app_id: Annotated[
+        str | None, Field(default=None, description="Alias for 'project' (mem0 hosted-API field name).")
+    ] = None,
     filters: Annotated[dict[str, Any] | None, Field(default=None, description="Additional structured filters.")] = None,
     top_k: Annotated[int | None, Field(default=None, description="Maximum results.")] = None,
     threshold: Annotated[float | None, Field(default=None, description="Minimum similarity score.")] = None,
@@ -175,7 +190,7 @@ def search_memories(
         user_id=_effective_user_id(user_id),
         agent_id=agent_id,
         run_id=run_id,
-        project=project,
+        project=_effective_project(project, app_id),
         extra=filters,
     )
     payload: dict[str, Any] = {
@@ -278,7 +293,8 @@ def memory_assistant() -> str:
         "You have access to Mem0 tools for long-term memory. "
         "Memories are scoped by user_id (the human), agent_id (the AI agent), "
         "and optionally by project (stored in metadata) and run_id (task/session). "
-        "Use the 'project' parameter to organize memories by project/workspace. "
+        "Use the 'project' parameter to organize memories by project/workspace "
+        "('app_id' is also accepted as an alias for 'project'). "
         "Store durable facts, preferences, project decisions, and task learnings."
     )
 
