@@ -3,10 +3,14 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MCP_DIR = os.path.join(ROOT, "server", "mcp")
 if MCP_DIR not in sys.path:
     sys.path.insert(0, MCP_DIR)
+
+pytest.importorskip("mcp", reason="mcp not installed (see server/mcp/requirements.txt)")
 
 from mem0_mcp_bridge.client import build_filters  # noqa: E402
 from mem0_mcp_bridge.server import _effective_project  # noqa: E402
