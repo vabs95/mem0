@@ -10,7 +10,7 @@ memory tagged metadata.type=compact_summary.
 Input:  JSON on stdin with transcript_path, session_id, source
 Output: stderr logs only (exit 0 always -- must not block)
 
-Spawned in the background by on_session_start.sh; the user-facing
+Spawned in the background by _handlers.py's cmd_session_start; the user-facing
 bootstrap text continues without waiting on the network.
 """
 

@@ -139,7 +139,7 @@ def build_content(state: dict, source: str) -> str:
     """Build minimal context — only what's needed to resume work.
 
     This is a FALLBACK safety net, not the primary capture path.
-    The agent handles rich memory storage via on_pre_compact.sh prompts.
+    The agent handles rich memory storage via the PreCompact hook's prompts.
     This script only fires when the agent didn't store enough on its own.
 
     Keep it short — mem0 infer=True will extract structured facts.

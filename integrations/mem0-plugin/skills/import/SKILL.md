@@ -148,7 +148,7 @@ skipped, chunks >10k chars truncated, safe to re-run (deduplication handles it).
 ## Importing Claude Code's native MEMORY.md
 
 When invoked with a path to Claude Code's native `MEMORY.md` file (typically
-`~/.claude/projects/<proj-key>/memory/MEMORY.md`), or when `on_session_start.sh`
+`~/.claude/projects/<proj-key>/memory/MEMORY.md`), or when the SessionStart hook
 detects native auto-memory and the user chooses to import:
 
 1. Read the file. It contains newline-separated memory entries (one fact per line,

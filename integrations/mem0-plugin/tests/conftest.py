@@ -23,6 +23,13 @@ def _scripts_on_path():
 
 
 @pytest.fixture(autouse=True)
+def _no_daemon(monkeypatch):
+    """Tests that subprocess-invoke _handlers.py must not spawn a real
+    background daemon — keep them hermetic and fast."""
+    monkeypatch.setenv("MEM0_NO_DAEMON", "true")
+
+
+@pytest.fixture(autouse=True)
 def _clean_project_map(monkeypatch):
     """Remove project_map.json and clear MEM0_PROJECT_ID before each test."""
     monkeypatch.delenv("MEM0_PROJECT_ID", raising=False)

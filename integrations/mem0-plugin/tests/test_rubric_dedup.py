@@ -1,10 +1,16 @@
-"""Tests for rubric deduplication in on_user_prompt.sh."""
+"""Tests for rubric deduplication in _handlers.py's cmd_user_prompt.
+
+Runs _handlers.py as a subprocess (not an in-process import) so this stays a
+true characterization test across the Claude Code / Codex hook boundary —
+the same invocation shape hooks.json and codex-hooks.json actually use.
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -22,7 +28,7 @@ def _clean_rubric_flag(tmp_path, monkeypatch):
 
 
 def _run_hook(prompt: str, env_overrides: dict | None = None, session_id: str = "test-sess-001") -> str:
-    """Run on_user_prompt.sh with a simulated prompt and return stdout."""
+    """Run `_handlers.py user_prompt` with a simulated prompt and return stdout."""
     env = {
         **os.environ,
         "USER": "testuser",
@@ -31,13 +37,14 @@ def _run_hook(prompt: str, env_overrides: dict | None = None, session_id: str = 
         "MEM0_PROJECT_ID": "test-project",
         "MEM0_BRANCH": "main",
         "MEM0_PREFETCH": "false",
+        "MEM0_NO_DAEMON": "true",
     }
     if env_overrides:
         env.update(env_overrides)
 
     input_json = json.dumps({"prompt": prompt, "session_id": session_id})
     result = subprocess.run(
-        ["bash", os.path.join(SCRIPTS_DIR, "on_user_prompt.sh")],
+        [sys.executable, os.path.join(SCRIPTS_DIR, "_handlers.py"), "user_prompt"],
         input=input_json,
         capture_output=True,
         text=True,
