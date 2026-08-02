@@ -27,10 +27,10 @@ import glob
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from _api import add_memory, list_memories
-from _identity import resolve_api_key, resolve_user_id
-from _platform import spawn_bg
-from _project import resolve_branch, resolve_project_id
+from _api import list_memories  # noqa: E402
+from _identity import resolve_api_key, resolve_user_id  # noqa: E402
+from _platform import spawn_bg  # noqa: E402
+from _project import resolve_branch, resolve_project_id  # noqa: E402
 
 if os.environ.get("MEM0_DEBUG"):
     _log_dir = os.path.expanduser("~/.mem0")
@@ -412,10 +412,14 @@ def cmd_user_prompt(input_data: dict) -> None:
         has_remember = True
 
     telem_args = [sys.executable, os.path.join(SCRIPT_DIR, "telemetry.py"), "user_prompt"]
-    if has_error: telem_args.append("--error_detected")
-    if file_paths: telem_args.append("--file_paths_detected")
-    if has_resume: telem_args.append("--resume_detected")
-    if has_remember: telem_args.append("--remember_detected")
+    if has_error:
+        telem_args.append("--error_detected")
+    if file_paths:
+        telem_args.append("--file_paths_detected")
+    if has_resume:
+        telem_args.append("--resume_detected")
+    if has_remember:
+        telem_args.append("--remember_detected")
     spawn_bg(telem_args)
 
     if not api_key:
