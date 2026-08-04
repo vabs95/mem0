@@ -94,7 +94,7 @@ This points Codex at the repo's `.agents/plugins/marketplace.json`, which refere
 
 > **Don't combine with Option A.** The plugin manifest auto-registers `mem0` as an MCP server via `integrations/mem0-plugin/.codex-mcp.json` — adding a manual `[mcp_servers.mem0]` block would duplicate the registration.
 
-> **Self-hosting mem0?** `.codex-mcp.json` in your clone points at the hosted `mcp.mem0.ai` endpoint by default. Edit its `url` to your own server's `/mcp` path (e.g. `http://localhost:8888/mcp`), and add an `"X-User-Id"` entry under `http_headers` if you want to pin a specific user rather than falling back to the server's default.
+> **Self-hosting mem0?** `.codex-mcp.json` in your clone points at the hosted `mcp.mem0.ai` endpoint by default. Codex doesn't expand `${VAR}` templates inside `url`, so you'll need to edit that field directly to your own server's `/mcp` path (e.g. `http://localhost:8888/mcp`) — this edit doesn't survive a `codex plugin add` reinstall, so you'll redo it each time you reinstall against a self-hosted endpoint. To pin a specific user without editing the file, export `MEM0_USER_ID` in your shell; it's already wired up via `env_http_headers` and sent as `X-User-Id`, falling back to the server's default when unset.
 
 **Optional — enable lifecycle hooks.** Codex doesn't auto-wire hooks from plugin manifests; it only reads `~/.codex/hooks.json` (or `<repo>/.codex/hooks.json`) ([docs](https://developers.openai.com/codex/hooks)). Run the bundled installer once to merge Mem0's entries:
 

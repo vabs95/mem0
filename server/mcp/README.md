@@ -45,14 +45,18 @@ Configure the MCP server in your `.codex-mcp.json` or equivalent configuration:
       "url": "https://<your-vps-url>:8765/mcp",
       "bearer_token_env_var": "MEM0_API_KEY",
       "http_headers": {
-        "X-User-Id": "seth",
         "X-Source-Agent": "codex"
+      },
+      "env_http_headers": {
+        "X-User-Id": "MEM0_USER_ID"
       }
     }
   }
 }
 ```
-*Make sure to export `MEM0_API_KEY` locally in the shell running Codex.*
+*Make sure to export `MEM0_API_KEY` and (optionally) `MEM0_USER_ID` locally in the shell running Codex.
+Note that Codex takes `url` literally — it does not expand `${VAR}` templates — so the endpoint itself
+must be edited directly rather than sourced from an env var.*
 
 #### 2. Other Agents (TOML format)
 Configure using TOML:
@@ -61,7 +65,8 @@ Configure using TOML:
 [mcp_servers.mem0]
 url = "https://<your-vps-url>:8765/mcp"
 bearer_token_env_var = "MEM0_API_KEY"
-http_headers = { "X-User-Id" = "seth", "X-Source-Agent" = "codex" }
+http_headers = { "X-Source-Agent" = "codex" }
+env_http_headers = { "X-User-Id" = "MEM0_USER_ID" }
 ```
 
 ## Memory Scoping
