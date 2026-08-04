@@ -707,12 +707,20 @@ DAEMON_PORT_FILE = os.path.expanduser("~/.mem0/daemon.port")
 DAEMON_LOG_FILE = os.path.expanduser("~/.mem0/daemon.log")
 _DAEMON_CONNECT_TIMEOUT = 0.05
 _DAEMON_SPAWN_RETRY_TOTAL = 0.5
+# Hook handlers can make a real network call (e.g. session_start fetching
+# context from a remote self-hosted mem0 API over Tailscale), so the actual
+# dispatch request needs real headroom — unlike _DAEMON_CONNECT_TIMEOUT,
+# which only probes whether the daemon's socket is accepting connections yet.
+_DAEMON_REQUEST_TIMEOUT = 20.0
 
 # Forwarded to the daemon on every dispatch so its identity resolution
 # reflects *this* invocation's environment rather than whatever was set
 # when the long-lived daemon process was originally spawned — see
-# daemon.py's _apply_request_env for the receiving side.
-_IDENTITY_ENV_KEYS = ("MEM0_USER_ID", "MEM0_PROJECT_ID", "MEM0_API_KEY", "MEM0_AGENT_ID")
+# daemon.py's _apply_request_env for the receiving side. MEM0_PLATFORM is
+# included so timeline events are attributed to the calling editor/CLI
+# (e.g. "codex") rather than whichever platform's hook happened to spawn
+# the daemon first.
+_IDENTITY_ENV_KEYS = ("MEM0_USER_ID", "MEM0_PROJECT_ID", "MEM0_API_KEY", "MEM0_AGENT_ID", "MEM0_PLATFORM")
 
 
 def _read_daemon_port() -> int | None:
@@ -739,6 +747,22 @@ def _call_daemon(port: int, hook_name: str, input_data: dict, timeout: float) ->
         conn.close()
 
 
+def _daemon_is_up(port: int, timeout: float) -> bool:
+    """Cheap readiness probe — GET /health only, never the real hook
+    endpoint. Used for the spawn-retry loop below so that loop can poll
+    quickly without each attempt being a genuine hook dispatch."""
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request("GET", "/health")
+        return conn.getresponse().status == 200
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
 def _exit_with_daemon_result(result: dict) -> None:
     sys.stdout.write(result.get("stdout", ""))
     sys.exit(result.get("exit_code", 0))
@@ -749,28 +773,43 @@ def _dispatch_via_daemon(hook_name: str, input_data: dict) -> None:
     exit) only if the daemon never became reachable — the caller then
     falls back to plain in-process dispatch. That fallback is the
     crash-safety net: if the daemon never comes up, hooks behave exactly
-    as they did before it existed, just without the warm-cache speedup."""
+    as they did before it existed, just without the warm-cache speedup.
+
+    Sends the real hook POST at most once per daemon-discovery path (an
+    already-running daemon, or one freshly spawned here). Earlier this
+    retried the actual POST itself on every short poll-interval timeout —
+    against an already-running-but-slow daemon (e.g. session_start doing a
+    real network call to a remote mem0 API) each retry was a genuine
+    re-dispatch, not just a reconnect, so a single slow hook call could
+    fire the handler — and post a timeline event — several times over.
+    Polling now uses a separate, cheap /health probe instead."""
     env = {k: os.environ[k] for k in _IDENTITY_ENV_KEYS if os.environ.get(k)}
     payload = {**input_data, "_env": env}
 
     port = _read_daemon_port()
-    if port is not None:
-        result = _call_daemon(port, hook_name, payload, timeout=2.0)
+    if port is not None and _daemon_is_up(port, _DAEMON_CONNECT_TIMEOUT):
+        result = _call_daemon(port, hook_name, payload, timeout=_DAEMON_REQUEST_TIMEOUT)
         if result is not None:
             _exit_with_daemon_result(result)
+        return
 
     from _platform import spawn_daemon_detached
 
     spawn_daemon_detached([sys.executable, os.path.join(SCRIPT_DIR, "daemon.py")], DAEMON_LOG_FILE)
 
     deadline = time.time() + _DAEMON_SPAWN_RETRY_TOTAL
+    port = None
     while time.time() < deadline:
-        port = _read_daemon_port()
-        if port is not None:
-            result = _call_daemon(port, hook_name, payload, timeout=_DAEMON_CONNECT_TIMEOUT)
-            if result is not None:
-                _exit_with_daemon_result(result)
+        candidate = _read_daemon_port()
+        if candidate is not None and _daemon_is_up(candidate, _DAEMON_CONNECT_TIMEOUT):
+            port = candidate
+            break
         time.sleep(0.05)
+
+    if port is not None:
+        result = _call_daemon(port, hook_name, payload, timeout=_DAEMON_REQUEST_TIMEOUT)
+        if result is not None:
+            _exit_with_daemon_result(result)
 
 
 def main() -> None:

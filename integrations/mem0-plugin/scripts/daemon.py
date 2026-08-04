@@ -46,7 +46,7 @@ CACHE_TTL_SECONDS = 45
 # they always see current env) forward their own values for these keys in
 # the request body; _apply_request_env applies them for the duration of
 # that one request and restores the daemon's own startup values after.
-_IDENTITY_ENV_KEYS = ("MEM0_USER_ID", "MEM0_PROJECT_ID", "MEM0_API_KEY", "MEM0_AGENT_ID")
+_IDENTITY_ENV_KEYS = ("MEM0_USER_ID", "MEM0_PROJECT_ID", "MEM0_API_KEY", "MEM0_AGENT_ID", "MEM0_PLATFORM")
 _STARTUP_ENV = {k: os.environ[k] for k in _IDENTITY_ENV_KEYS if k in os.environ}
 
 
@@ -122,6 +122,24 @@ def _install_caching() -> None:
     _handlers.resolve_branch = lambda cwd=None: _cached(f"branch:{cwd}", lambda: real_resolve_branch(cwd))
 
 
+def _summarize_event(hook_name: str, input_data: dict) -> str | None:
+    """Short human-readable description of what happened, for the timeline
+    UI — without this every row renders with an empty summary column."""
+    if hook_name == "user_prompt":
+        prompt = (input_data.get("prompt") or "").strip()
+        return prompt[:200] if prompt else None
+    if hook_name == "session_start":
+        return f"Session {input_data.get('source') or 'startup'}"
+    if hook_name == "stop":
+        return "Session ended"
+    if hook_name == "pre_compact":
+        return "Context compacted"
+    if hook_name == "post_tool_use":
+        tool = input_data.get("tool_name")
+        return f"Used {tool}" if tool else None
+    return None
+
+
 def _post_timeline_event(hook_name: str, input_data: dict) -> None:
     """Best-effort, fire-and-forget write to the server-side timeline.
 
@@ -141,6 +159,7 @@ def _post_timeline_event(hook_name: str, input_data: dict) -> None:
             "source_agent": os.environ.get("MEM0_PLATFORM", "claude-code"),
             "user_id": _handlers.resolve_user_id(),
             "project": _handlers.resolve_project_id(cwd),
+            "summary": _summarize_event(hook_name, input_data),
         }
         data = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json", **auth_headers(api_key)}
