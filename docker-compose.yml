@@ -23,7 +23,7 @@ services:
 
       AUTH_DISABLED: "${AUTH_DISABLED:-false}"
       JWT_SECRET: "${JWT_SECRET}"
-      DASHBOARD_URL: "https://vabs-vps.oberhasli-prometheus.ts.net:3443"
+      DASHBOARD_URL: "${MEM0_DASHBOARD_URL:-http://localhost:3000}"
       APP_DB_NAME: "mem0_app"
       MEM0_TELEMETRY: "${MEM0_TELEMETRY:-false}"
 
@@ -74,7 +74,7 @@ services:
     networks:
       - mem0_network
     environment:
-      NEXT_PUBLIC_API_URL: "https://vabs-vps.oberhasli-prometheus.ts.net:8443"
+      NEXT_PUBLIC_API_URL: "${MEM0_PUBLIC_API_URL:-http://localhost:8888}"
       API_INTERNAL_URL: "http://mem0:8000"
       NEXT_PUBLIC_INSTANCE_NAME: "Mem0"
     depends_on:
