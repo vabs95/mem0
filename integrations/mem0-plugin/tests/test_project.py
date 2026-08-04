@@ -7,18 +7,27 @@ import os
 import subprocess
 
 
-def test_resolve_project_id_from_https_remote(tmp_git_repo):
+def test_resolve_project_id_from_git_repo_root(tmp_git_repo):
+    """Project id is the repo root dir name, not an owner/org-qualified
+    remote slug — a remote pointing at a personal fork would otherwise make
+    the id look like it's prefixed with the caller's own identity."""
     from _project import resolve_project_id
 
     pid = resolve_project_id(str(tmp_git_repo))
-    assert pid == "mem0ai-mem0"
+    assert pid == os.path.basename(str(tmp_git_repo))
 
 
-def test_resolve_project_id_from_ssh_remote(tmp_git_repo_ssh):
+def test_resolve_project_id_stable_across_subdirectories(tmp_git_repo):
+    """Resolving from a nested subdirectory still returns the repo root's
+    basename, not the subdirectory's — same stability claim as claude-mem's
+    getProjectName()."""
     from _project import resolve_project_id
 
-    pid = resolve_project_id(str(tmp_git_repo_ssh))
-    assert pid == "acme-cool-project"
+    subdir = tmp_git_repo / "nested" / "dir"
+    subdir.mkdir(parents=True)
+
+    pid = resolve_project_id(str(subdir))
+    assert pid == os.path.basename(str(tmp_git_repo))
 
 
 def test_resolve_project_id_fallback_basename(tmp_no_git):
@@ -75,30 +84,14 @@ def test_resolve_branch_no_git(tmp_no_git):
     assert branch == "unknown"
 
 
-def test_remote_url_to_slug_various_formats():
-    from _project import _remote_url_to_slug
-
-    assert _remote_url_to_slug("https://github.com/mem0ai/mem0.git") == "mem0ai-mem0"
-    assert _remote_url_to_slug("git@github.com:mem0ai/mem0.git") == "mem0ai-mem0"
-    assert _remote_url_to_slug("ssh://git@github.com/acme/app.git") == "acme-app"
-    assert _remote_url_to_slug("https://gitlab.com/org/sub/repo.git") == "sub-repo"
-    assert _remote_url_to_slug("git@bitbucket.org:team/project.git") == "team-project"
-
-
-def test_remote_url_to_slug_no_git_suffix():
-    from _project import _remote_url_to_slug
-
-    assert _remote_url_to_slug("https://github.com/foo/bar") == "foo-bar"
-
-
 def test_resolve_project_id_priority_order(tmp_git_repo, monkeypatch):
-    """Env var > project_map > git remote > basename."""
+    """Env var > project_map > git repo root > basename."""
     from _project import resolve_project_id, save_project_mapping
 
-    # Git remote gives "mem0ai-mem0"
-    assert resolve_project_id(str(tmp_git_repo)) == "mem0ai-mem0"
+    # Git repo root gives its own basename
+    assert resolve_project_id(str(tmp_git_repo)) == os.path.basename(str(tmp_git_repo))
 
-    # project_map overrides git remote
+    # project_map overrides git repo root
     save_project_mapping(str(tmp_git_repo), "from-map")
     assert resolve_project_id(str(tmp_git_repo)) == "from-map"
 

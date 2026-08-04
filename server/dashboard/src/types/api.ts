@@ -33,7 +33,7 @@ export interface ApiRequestLog {
   auth_type: string;
 }
 
-export type EntityType = "user" | "agent" | "run";
+export type EntityType = "user" | "agent" | "run" | "project";
 
 export interface Entity {
   id: string;
@@ -41,4 +41,17 @@ export interface Entity {
   total_memories: number;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface TimelineEvent {
+  id: string;
+  event_type: string;
+  source_agent: string;
+  user_id?: string | null;
+  agent_id?: string | null;
+  run_id?: string | null;
+  project?: string | null;
+  summary?: string | null;
+  payload?: Record<string, unknown> | null;
+  created_at: string;
 }

@@ -13,8 +13,13 @@ router = APIRouter(prefix="/entities", tags=["entities"])
 
 SCAN_LIMIT = 10_000
 
-EntityType = Literal["user", "agent", "run"]
-TYPE_TO_FIELD: dict[EntityType, str] = {"user": "user_id", "agent": "agent_id", "run": "run_id"}
+EntityType = Literal["user", "agent", "run", "project"]
+TYPE_TO_FIELD: dict[EntityType, str] = {
+    "user": "user_id",
+    "agent": "agent_id",
+    "run": "run_id",
+    "project": "project",
+}
 
 
 class Entity(BaseModel):

@@ -261,7 +261,7 @@ python -m benchmarks.beam.run --project-name my-test --backend cloud --mem0-api-
 | `get_all(*, user_id, agent_id, run_id, limit)` | List all memories |
 | `update(memory_id, data)` | Update a memory |
 | `delete(memory_id)` | Delete a memory |
-| `delete_all(*, user_id, agent_id, run_id)` | Delete all memories |
+| `delete_all(*, user_id, agent_id, run_id, project)` | Delete all memories |
 | `history(memory_id)` | Get change history for a memory |
 
 ### TypeScript

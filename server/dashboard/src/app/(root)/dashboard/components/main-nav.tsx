@@ -6,6 +6,7 @@ import {
   Activity,
   ChartLine,
   ChevronDown,
+  Clock,
   FolderInput,
   GalleryVerticalEnd,
   KeyRound,
@@ -80,6 +81,12 @@ export function MainNav({
                     url: "/dashboard/entities",
                     icon: Users,
                     active: pathname === "/dashboard/entities",
+                  },
+                  {
+                    title: "Timeline",
+                    url: "/dashboard/timeline",
+                    icon: Clock,
+                    active: pathname === "/dashboard/timeline",
                   },
                 ].map((item) => (
                   <SidebarMenuItem key={item.title}>

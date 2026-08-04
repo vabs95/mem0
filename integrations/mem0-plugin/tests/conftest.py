@@ -55,19 +55,6 @@ def tmp_git_repo(tmp_path):
 
 
 @pytest.fixture()
-def tmp_git_repo_ssh(tmp_path):
-    """Create a temp dir with a git repo and SSH remote."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(
-        ["git", "remote", "add", "origin", "git@github.com:acme/cool-project.git"],
-        cwd=tmp_path,
-        capture_output=True,
-        check=True,
-    )
-    return tmp_path
-
-
-@pytest.fixture()
 def tmp_no_git(tmp_path):
     """Temp dir with no git repo."""
     return tmp_path

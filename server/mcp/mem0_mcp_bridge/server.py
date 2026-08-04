@@ -209,6 +209,9 @@ def get_memories(
     agent_id: Annotated[str | None, Field(default=None, description="Agent scope.")] = None,
     run_id: Annotated[str | None, Field(default=None, description="Run scope.")] = None,
     project: Annotated[str | None, Field(default=None, description="Filter by project.")] = None,
+    app_id: Annotated[
+        str | None, Field(default=None, description="Alias for 'project' (mem0 hosted-API field name).")
+    ] = None,
     top_k: Annotated[int | None, Field(default=None, description="Maximum memories to list.")] = None,
 ) -> str:
     params: dict[str, Any] = {
@@ -219,8 +222,9 @@ def get_memories(
         params["agent_id"] = agent_id
     if run_id:
         params["run_id"] = run_id
-    # Note: project filtering on GET /memories is not supported by the backend
-    # query params; agent should use search_memories with project filter instead.
+    project = _effective_project(project, app_id)
+    if project:
+        params["project"] = project
     return _json_call(_client().request, "GET", "/memories", params=params)
 
 
@@ -253,6 +257,10 @@ def delete_all_memories(
     user_id: Annotated[str | None, Field(default=None, description="User scope (default: from config header).")] = None,
     agent_id: Annotated[str | None, Field(default=None, description="Agent scope.")] = None,
     run_id: Annotated[str | None, Field(default=None, description="Run scope.")] = None,
+    project: Annotated[str | None, Field(default=None, description="Project scope.")] = None,
+    app_id: Annotated[
+        str | None, Field(default=None, description="Alias for 'project' (mem0 hosted-API field name).")
+    ] = None,
 ) -> str:
     params: dict[str, Any] = {
         "user_id": _effective_user_id(user_id),
@@ -261,6 +269,9 @@ def delete_all_memories(
         params["agent_id"] = agent_id
     if run_id:
         params["run_id"] = run_id
+    project = _effective_project(project, app_id)
+    if project:
+        params["project"] = project
     return _json_call(_client().request, "DELETE", "/memories", params=params)
 
 
@@ -269,15 +280,22 @@ def list_entities() -> str:
     return _json_call(_client().request, "GET", "/entities")
 
 
-@server.tool(description="Delete a user/agent/run entity and its memories.")
+@server.tool(description="Delete a user/agent/run/project entity and its memories.")
 def delete_entities(
     user_id: Annotated[str | None, Field(default=None, description="User entity to delete.")] = None,
     agent_id: Annotated[str | None, Field(default=None, description="Agent entity to delete.")] = None,
     run_id: Annotated[str | None, Field(default=None, description="Run entity to delete.")] = None,
+    project: Annotated[str | None, Field(default=None, description="Project entity to delete.")] = None,
 ) -> str:
-    scopes = [(k[:-3], v) for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id}.items() if v]
+    scopes = [
+        (k[:-3] if k.endswith("_id") else k, v)
+        for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items()
+        if v
+    ]
     if len(scopes) != 1:
-        return json.dumps({"error": "scope_invalid", "detail": "Provide exactly one of user_id, agent_id, or run_id."})
+        return json.dumps(
+            {"error": "scope_invalid", "detail": "Provide exactly one of user_id, agent_id, run_id, or project."}
+        )
     entity_type, entity_id = scopes[0]
     return _json_call(_client().request, "DELETE", f"/entities/{entity_type}/{entity_id}")
 

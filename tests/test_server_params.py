@@ -628,6 +628,16 @@ class TestGetMemories:
         assert kwargs["filters"] == {"user_id": "test_routing_user"}
         assert "top_k" not in kwargs
 
+    def test_get_memories_project_forwarded_into_filters(self, client, mock_memory):
+        """project should narrow the filters dict alongside an identity param,
+        not be silently dropped (previously a dead parameter — see delete_all
+        project scoping work)."""
+        response = client.get("/memories?user_id=test_routing_user&project=my-project")
+
+        assert response.status_code == 200
+        _, kwargs = mock_memory.get_all.call_args
+        assert kwargs["filters"] == {"user_id": "test_routing_user", "project": "my-project"}
+
     def test_get_memories_entity_filters_forward_top_k(self, client, mock_memory):
         response = client.get("/memories?user_id=test_routing_user&top_k=1000")
 
@@ -736,6 +746,38 @@ class TestSearchValidationErrors:
         )
         resp = client.post("/search", json={"query": "food"})
         assert resp.status_code == 400
+
+
+# ===========================================================================
+# DELETE /memories: project scoping
+# ===========================================================================
+
+class TestDeleteAllMemoriesProjectScoping:
+    """project narrows a bulk delete to one project instead of a user's/
+    agent's/run's entire memory set across every project — see the
+    delete_all() core library change this depends on."""
+
+    def test_delete_all_project_forwarded_alongside_user_id(self, client, mock_memory):
+        resp = client.delete("/memories", params={"user_id": "alice", "project": "my-project"})
+
+        assert resp.status_code == 200
+        _, kwargs = mock_memory.delete_all.call_args
+        assert kwargs == {"user_id": "alice", "project": "my-project"}
+
+    def test_delete_all_project_alone_is_a_valid_identifier(self, client, mock_memory):
+        """project alone must satisfy the 'at least one identifier' check,
+        not just user_id/run_id/agent_id."""
+        resp = client.delete("/memories", params={"project": "my-project"})
+
+        assert resp.status_code == 200
+        _, kwargs = mock_memory.delete_all.call_args
+        assert kwargs == {"project": "my-project"}
+
+    def test_delete_all_still_rejects_no_identifier_at_all(self, client, mock_memory):
+        resp = client.delete("/memories")
+
+        assert resp.status_code == 400
+        mock_memory.delete_all.assert_not_called()
 
 
 # ===========================================================================

@@ -38,6 +38,39 @@ LOG_FILE = os.path.join(STATE_DIR, "daemon.log")
 IDLE_SHUTDOWN_SECONDS = 30 * 60
 CACHE_TTL_SECONDS = 45
 
+# Identity env vars the daemon resolves on behalf of callers. The daemon is a
+# long-lived process, so its own os.environ is frozen at whatever it looked
+# like when the daemon was spawned — a caller exporting MEM0_USER_ID in a
+# fresh shell afterwards would otherwise never be seen without killing and
+# respawning the daemon. Callers (freshly spawned per hook invocation, so
+# they always see current env) forward their own values for these keys in
+# the request body; _apply_request_env applies them for the duration of
+# that one request and restores the daemon's own startup values after.
+_IDENTITY_ENV_KEYS = ("MEM0_USER_ID", "MEM0_PROJECT_ID", "MEM0_API_KEY", "MEM0_AGENT_ID")
+_STARTUP_ENV = {k: os.environ[k] for k in _IDENTITY_ENV_KEYS if k in os.environ}
+
+
+def _apply_request_env(overrides: dict) -> bool:
+    """Set identity env vars from a request, falling back to the daemon's
+    own startup values for any key the request didn't supply — so one
+    caller's identity never leaks into the next request's resolution.
+
+    Returns True if any key actually changed value, so the caller only
+    pays for a cache invalidation (subprocess/file-read re-resolution)
+    when the identity picture genuinely differs from last time — not on
+    every single hook event, which would defeat the point of caching."""
+    changed = False
+    for key in _IDENTITY_ENV_KEYS:
+        value = overrides.get(key) if isinstance(overrides, dict) else None
+        new_value = value or _STARTUP_ENV.get(key)
+        if os.environ.get(key) != new_value:
+            changed = True
+        if new_value:
+            os.environ[key] = new_value
+        else:
+            os.environ.pop(key, None)
+    return changed
+
 _dispatch_lock = threading.Lock()
 _last_request_at = time.time()
 _cache: dict[str, tuple[float, object]] = {}
@@ -171,7 +204,9 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             input_data = {}
 
-        if hook_name == "session_start":
+        env_overrides = input_data.pop("_env", None)
+        env_changed = _apply_request_env(env_overrides or {})
+        if hook_name == "session_start" or env_changed:
             _invalidate_cache()
 
         stdout, exit_code = _run_captured(hook_name, input_data)

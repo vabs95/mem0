@@ -74,9 +74,28 @@ def cmd_enforce_metadata(input_data: dict) -> None:
     global_search = os.environ.get("MEM0_GLOBAL_SEARCH", "false") == "true"
     changed = False
 
-    def inject_top_level_identity(inp, u, a, ag_id):
+    def inject_top_level_identity(inp, u, a=None, ag_id=None):
+        # user_id is always normalized to the resolved identity, never
+        # merely filled when absent — a value the model supplied itself
+        # may be stale or carried over from a different call's context
+        # (see the project-scope drift found in testing: search reused a
+        # value from the model's own reasoning instead of the identity
+        # actually in effect). app_id/agent_id stay fill-gap-only since
+        # cross-project association is a legitimate thing to want.
+        #
+        # Deliberately top-level fields only, never `filters` — the
+        # bridge merges any `filters` the model supplies via a flat
+        # dict.update() on top of the top-level user_id/agent_id/
+        # run_id/project it already resolves from these same named
+        # params (see server/mcp/mem0_mcp_bridge/client.py build_filters).
+        # An AND-list injected into `filters` doesn't merge with that;
+        # it collides, producing a self-contradictory/malformed filter
+        # (e.g. two different user_id clauses ANDed together, which can
+        # never match) — this was the actual cause of the empty-result
+        # and 400 bugs found in testing, not a data problem.
+        #
         ch = False
-        if u and not inp.get("user_id"):
+        if u and inp.get("user_id") != u:
             inp["user_id"] = u
             ch = True
         if a and not inp.get("app_id"):
@@ -84,52 +103,6 @@ def cmd_enforce_metadata(input_data: dict) -> None:
             ch = True
         if ag_id and not inp.get("agent_id"):
             inp["agent_id"] = ag_id
-            ch = True
-        return ch
-
-    def inject_filter_identity(inp, u, a):
-        if not u and not a:
-            return False
-        filters = inp.get("filters")
-        if filters is None:
-            and_clauses = []
-            if u:
-                and_clauses.append({"user_id": u})
-            if a:
-                and_clauses.append({"app_id": a})
-            inp["filters"] = {"AND": and_clauses}
-            return True
-        if not isinstance(filters, dict):
-            return False
-        and_clauses = filters.get("AND")
-        if and_clauses is None:
-            has_uid = "user_id" in filters
-            has_aid = "app_id" in filters
-            if has_uid and has_aid:
-                return False
-            existing = []
-            for k, v in list(filters.items()):
-                existing.append({k: v})
-            ch = False
-            if u and not has_uid:
-                existing.append({"user_id": u})
-                ch = True
-            if a and not has_aid:
-                existing.append({"app_id": a})
-                ch = True
-            if ch:
-                inp["filters"] = {"AND": existing}
-            return ch
-        if not isinstance(and_clauses, list):
-            return False
-        has_uid = any("user_id" in c for c in and_clauses if isinstance(c, dict))
-        has_aid = any("app_id" in c for c in and_clauses if isinstance(c, dict))
-        ch = False
-        if u and not has_uid:
-            and_clauses.append({"user_id": u})
-            ch = True
-        if a and not has_aid:
-            and_clauses.append({"app_id": a})
             ch = True
         return ch
 
@@ -167,12 +140,18 @@ def cmd_enforce_metadata(input_data: dict) -> None:
                 changed = True
         if changed:
             inp["metadata"] = meta
-    elif handler in ("search_memories", "get_memories"):
+    elif handler == "search_memories":
         if global_search:
-            inp["filters"] = {"OR": [{"user_id": "*"}]}
+            inp.pop("user_id", None)
             changed = True
         else:
-            changed = inject_filter_identity(inp, uid, aid)
+            changed = inject_top_level_identity(inp, uid, aid)
+    elif handler == "get_memories":
+        if global_search:
+            inp.pop("user_id", None)
+            changed = True
+        else:
+            changed = inject_top_level_identity(inp, uid, aid)
     elif handler == "delete_all":
         changed = inject_top_level_identity(inp, uid, aid, agent_id)
 
@@ -729,6 +708,12 @@ DAEMON_LOG_FILE = os.path.expanduser("~/.mem0/daemon.log")
 _DAEMON_CONNECT_TIMEOUT = 0.05
 _DAEMON_SPAWN_RETRY_TOTAL = 0.5
 
+# Forwarded to the daemon on every dispatch so its identity resolution
+# reflects *this* invocation's environment rather than whatever was set
+# when the long-lived daemon process was originally spawned — see
+# daemon.py's _apply_request_env for the receiving side.
+_IDENTITY_ENV_KEYS = ("MEM0_USER_ID", "MEM0_PROJECT_ID", "MEM0_API_KEY", "MEM0_AGENT_ID")
+
 
 def _read_daemon_port() -> int | None:
     try:
@@ -765,9 +750,12 @@ def _dispatch_via_daemon(hook_name: str, input_data: dict) -> None:
     falls back to plain in-process dispatch. That fallback is the
     crash-safety net: if the daemon never comes up, hooks behave exactly
     as they did before it existed, just without the warm-cache speedup."""
+    env = {k: os.environ[k] for k in _IDENTITY_ENV_KEYS if os.environ.get(k)}
+    payload = {**input_data, "_env": env}
+
     port = _read_daemon_port()
     if port is not None:
-        result = _call_daemon(port, hook_name, input_data, timeout=2.0)
+        result = _call_daemon(port, hook_name, payload, timeout=2.0)
         if result is not None:
             _exit_with_daemon_result(result)
 
@@ -779,7 +767,7 @@ def _dispatch_via_daemon(hook_name: str, input_data: dict) -> None:
     while time.time() < deadline:
         port = _read_daemon_port()
         if port is not None:
-            result = _call_daemon(port, hook_name, input_data, timeout=_DAEMON_CONNECT_TIMEOUT)
+            result = _call_daemon(port, hook_name, payload, timeout=_DAEMON_CONNECT_TIMEOUT)
             if result is not None:
                 _exit_with_daemon_result(result)
         time.sleep(0.05)

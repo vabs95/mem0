@@ -3,8 +3,9 @@
 # Resolution priority (project_id):
 #   1. MEM0_PROJECT_ID env var (explicit override)
 #   2. ~/.mem0/project_map.json lookup by $PWD (requires jq)
-#   3. Git remote slug: strip protocol/prefix, strip .git, replace / and : with -
-#      e.g. git@github.com:mem0ai/mem0.git -> mem0ai-mem0
+#   3. Git repo root basename (matches _project.py / claude-mem's
+#      getProjectName() — just the repo dir name, not an owner/org-qualified
+#      remote slug, and stable across subdirectories/worktrees)
 #   4. Fallback: basename of $PWD
 #
 # Branch resolution:
@@ -27,30 +28,10 @@ _mem0_resolve_project_id() {
     fi
   fi
 
-  # 3. Git remote slug
-  _mem0_remote_url=$(git remote get-url origin 2>/dev/null)
-  if [ -n "$_mem0_remote_url" ]; then
-    _mem0_slug="$_mem0_remote_url"
-    # Strip .git suffix
-    _mem0_slug="${_mem0_slug%.git}"
-    # Strip protocol prefixes
-    _mem0_slug="${_mem0_slug#https://}"
-    _mem0_slug="${_mem0_slug#http://}"
-    _mem0_slug="${_mem0_slug#ssh://}"
-    _mem0_slug="${_mem0_slug#git://}"
-    _mem0_slug="${_mem0_slug#git@}"
-    # Replace first colon (SSH host:path separator) with /
-    # shellcheck disable=SC2039
-    _mem0_slug="${_mem0_slug/://}"
-    # Keep only the last two path components (owner/repo)
-    _mem0_owner=$(printf '%s' "$_mem0_slug" | awk -F'/' '{print $(NF-1)}')
-    _mem0_repo=$(printf '%s' "$_mem0_slug" | awk -F'/' '{print $NF}')
-    _mem0_slug="${_mem0_owner}-${_mem0_repo}"
-    # Replace any remaining / and : with -
-    # shellcheck disable=SC2039
-    _mem0_slug="${_mem0_slug//\//-}"
-    # shellcheck disable=SC2039
-    _mem0_slug="${_mem0_slug//:/-}"
+  # 3. Git repo root basename
+  _mem0_repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [ -n "$_mem0_repo_root" ]; then
+    _mem0_slug=$(basename "$_mem0_repo_root")
     if [ -n "$_mem0_slug" ]; then
       printf '%s' "$_mem0_slug"
       _MEM0_PERSIST_CWD="$PWD" _MEM0_PERSIST_SLUG="$_mem0_slug" python3 -c "

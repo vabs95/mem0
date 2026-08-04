@@ -416,11 +416,20 @@ def get_all_memories(
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    project: Optional[str] = None,
     top_k: Optional[int] = Query(None, ge=0, le=ALL_MEMORIES_LIMIT),
     show_expired: bool = Query(False),
     _auth=Depends(verify_auth),
 ):
-    """Retrieve stored memories. Lists all memories when no identifier is provided (admin only)."""
+    """Retrieve stored memories. Lists all memories when no identifier is provided (admin only).
+
+    `project` is an additional narrowing filter, not an identity scope on its
+    own — at least one of user_id/run_id/agent_id is still required to avoid
+    the unscoped (admin-only) listing path below, same as before this param
+    existed. Passing project without an identity filter falls through to
+    that raw admin listing, which ignores it, exactly like every other
+    filter already does today.
+    """
     try:
         if not any([user_id, run_id, agent_id]):
             auth_type = getattr(request.state, "auth_type", "none")
@@ -429,7 +438,9 @@ def get_all_memories(
             # Admin all-memory listing is intentionally raw; scoped get_all below applies expiry visibility.
             return _list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT)
         filters = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v
+            k: v
+            for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id, "project": project}.items()
+            if v
         }
         params = {"filters": filters}
         if top_k is not None:
@@ -531,14 +542,22 @@ def delete_all_memories(
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    project: Optional[str] = None,
     _auth=Depends(require_admin),
 ):
-    """Delete all memories for a given identifier. Requires admin role."""
-    if not any([user_id, run_id, agent_id]):
+    """Delete all memories for a given identifier. Requires admin role.
+
+    project narrows a bulk delete to one project — e.g. user_id + project
+    clears one user's memories for a single project instead of all of
+    that user's memories across every project they've ever used.
+    """
+    if not any([user_id, run_id, agent_id, project]):
         raise HTTPException(status_code=400, detail="At least one identifier is required.")
     try:
         params = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v
+            k: v
+            for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id, "project": project}.items()
+            if v
         }
         get_memory_instance().delete_all(**params)
         return MessageResponse(message="All relevant memories deleted")

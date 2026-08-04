@@ -108,7 +108,7 @@ export default function EntitiesPage() {
       ) : entities.length === 0 ? (
         <EmptyState
           title="No entities yet"
-          description="Entities appear once memories are stored with a user_id, agent_id, or run_id."
+          description="Entities appear once memories are stored with a user_id, agent_id, run_id, or project."
         />
       ) : (
         <Card className="border-memBorder-primary overflow-hidden">

@@ -32,3 +32,7 @@ export const ENTITY_ENDPOINTS = {
   BY_ID: (type: string, id: string) =>
     `/entities/${type}/${encodeURIComponent(id)}`,
 } as const;
+
+export const TIMELINE_ENDPOINTS = {
+  EVENTS: "/timeline/events",
+} as const;
