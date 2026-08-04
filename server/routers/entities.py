@@ -3,11 +3,15 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 
 from auth import require_admin, verify_auth
+from db import get_db
 from errors import upstream_error
 from fastapi import APIRouter, Depends
+from models import TimelineEvent
 from pydantic import BaseModel
 from schemas import MessageResponse
 from server_state import get_memory_instance
+from sqlalchemy import delete
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/entities", tags=["entities"])
 
@@ -73,9 +77,24 @@ def list_entities(_auth=Depends(verify_auth)):
 
 
 @router.delete("/{entity_type}/{entity_id}", response_model=MessageResponse)
-def delete_entity(entity_type: EntityType, entity_id: str, _auth=Depends(require_admin)):
+def delete_entity(
+    entity_type: EntityType,
+    entity_id: str,
+    _auth=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
     try:
         get_memory_instance().delete_all(**{TYPE_TO_FIELD[entity_type]: entity_id})
     except Exception:
         raise upstream_error()
+
+    # Timeline events are scoped by the same fields as memories, so clearing
+    # an entity should clear its history too — otherwise deleting e.g. a
+    # project entity leaves its timeline events behind, orphaned and
+    # unreachable (no standalone timeline-delete endpoint exists; it's
+    # deliberately append-only outside of this entity-delete path).
+    column = getattr(TimelineEvent, TYPE_TO_FIELD[entity_type])
+    db.execute(delete(TimelineEvent).where(column == entity_id))
+    db.commit()
+
     return MessageResponse(message="Entity deleted")

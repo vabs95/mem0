@@ -4,8 +4,16 @@ Covers the "project" entity type added alongside user/agent/run — project
 isn't a real mem0 entity (no dedicated column), it's a metadata tag, so
 these tests exist specifically to pin down that list_entities buckets by it
 and DELETE /entities/project/{id} correctly maps to delete_all(project=...).
+
+Also covers that deleting an entity clears its TimelineEvent history too
+(same scoping fields), not just its memories — otherwise deleted entities
+leave orphaned, unreachable timeline rows behind. Uses an in-memory SQLite
+session (via FastAPI dependency override), same approach as
+test_server_timeline.py, since this router's delete is simple CRUD with no
+Postgres-specific features.
 """
 
+import importlib
 import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -15,6 +23,9 @@ import pytest
 pytest.importorskip("fastapi", reason="fastapi not installed")
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
 @pytest.fixture
@@ -28,9 +39,35 @@ def _mock_memory():
 
 @pytest.fixture
 def client(_mock_memory):
-    import server.main as server_main
+    with patch.dict(os.environ, {"ADMIN_API_KEY": "", "AUTH_DISABLED": "true"}):
+        import auth as server_auth
+        import db as server_db
+        import server.main as server_main
 
-    return TestClient(server_main.app)
+        # Note: only auth/main are reloaded, not db — routers/*.py already
+        # hold a reference to db.get_db from their own first import, and
+        # reloading db.py here would create a second, distinct function
+        # object that the routers never see, silently defeating the
+        # dependency_overrides applied below.
+        importlib.reload(server_auth)
+        importlib.reload(server_main)
+
+    test_engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    TestSessionLocal = sessionmaker(bind=test_engine, autoflush=False, expire_on_commit=False)
+    server_db.Base.metadata.create_all(bind=test_engine)
+
+    def _override_get_db():
+        db = TestSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    server_main.app.dependency_overrides[server_db.get_db] = _override_get_db
+    yield TestClient(server_main.app)
+    server_main.app.dependency_overrides.clear()
 
 
 def _row(**payload):
@@ -91,21 +128,89 @@ class TestListEntitiesBucketsByProject:
         assert "project" not in types
 
 
+@pytest.fixture
+def db_session():
+    """Plain in-memory SQLite session, no app/TestClient/middleware involved.
+
+    DELETE /entities routes through server.main's request-logging middleware
+    (_persist_request_log in server/main.py), which opens its own raw
+    SessionLocal() against the real Postgres URL regardless of the
+    dependency_overrides used elsewhere — unrelated to entities.py, but it
+    makes TestClient-based DELETE requests fail without a live Postgres
+    instance. These tests call the router function directly instead, which
+    exercises the exact same delete_entity()/TimelineEvent logic without
+    going through the HTTP/middleware stack.
+    """
+    from db import Base
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 class TestDeleteProjectEntity:
-    def test_delete_project_entity_calls_delete_all_with_project(self, client, _mock_memory):
-        resp = client.delete("/entities/project/my-project")
+    def test_delete_project_entity_calls_delete_all_with_project(self, db_session):
+        from routers.entities import delete_entity
 
-        assert resp.status_code == 200
-        _mock_memory.delete_all.assert_called_once_with(project="my-project")
+        # get_memory_instance() is a process-wide singleton (server_state.py)
+        # left over from whichever test's TestClient/app reload initialized
+        # it first — patch it directly here rather than relying on that
+        # shared state or the mem0.Memory.from_config patch that seeds it.
+        mock_instance = MagicMock()
+        with patch("routers.entities.get_memory_instance", return_value=mock_instance):
+            result = delete_entity("project", "my-project", db=db_session)
 
-    def test_delete_entity_still_supports_existing_types(self, client, _mock_memory):
-        resp = client.delete("/entities/user/alice")
+        assert result.message == "Entity deleted"
+        mock_instance.delete_all.assert_called_once_with(project="my-project")
 
-        assert resp.status_code == 200
-        _mock_memory.delete_all.assert_called_once_with(user_id="alice")
+    def test_delete_entity_still_supports_existing_types(self, db_session):
+        from routers.entities import delete_entity
 
-    def test_delete_entity_rejects_unknown_type(self, client, _mock_memory):
-        resp = client.delete("/entities/bogus/whatever")
+        mock_instance = MagicMock()
+        with patch("routers.entities.get_memory_instance", return_value=mock_instance):
+            result = delete_entity("user", "alice", db=db_session)
 
-        assert resp.status_code == 422
-        _mock_memory.delete_all.assert_not_called()
+        assert result.message == "Entity deleted"
+        mock_instance.delete_all.assert_called_once_with(user_id="alice")
+
+
+class TestDeleteEntityClearsTimeline:
+    def test_delete_project_entity_clears_its_timeline_events(self, _mock_memory, db_session):
+        from routers.entities import delete_entity
+        from routers.timeline import TimelineEventCreate, create_event, list_events
+
+        create_event(
+            TimelineEventCreate(event_type="session_start", source_agent="claude-code", project="my-project"),
+            db=db_session,
+        )
+        create_event(
+            TimelineEventCreate(event_type="session_start", source_agent="claude-code", project="other-project"),
+            db=db_session,
+        )
+
+        delete_entity("project", "my-project", db=db_session)
+
+        remaining_projects = {e.project for e in list_events(db=db_session, limit=50)}
+        assert "my-project" not in remaining_projects
+        assert "other-project" in remaining_projects
+
+    def test_delete_user_entity_clears_its_timeline_events(self, _mock_memory, db_session):
+        from routers.entities import delete_entity
+        from routers.timeline import TimelineEventCreate, create_event, list_events
+
+        create_event(
+            TimelineEventCreate(event_type="session_start", source_agent="codex", user_id="alice"), db=db_session
+        )
+        create_event(
+            TimelineEventCreate(event_type="session_start", source_agent="codex", user_id="bob"), db=db_session
+        )
+
+        delete_entity("user", "alice", db=db_session)
+
+        remaining_users = {e.user_id for e in list_events(db=db_session, limit=50)}
+        assert "alice" not in remaining_users
+        assert "bob" in remaining_users
