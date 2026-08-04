@@ -1858,7 +1858,13 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "delete")
         return {"message": "Memory deleted successfully!"}
 
-    def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
+    def delete_all(
+        self,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        project: Optional[str] = None,
+    ):
         """
         Delete all memories.
 
@@ -1866,10 +1872,15 @@ class Memory(MemoryBase):
             user_id (str, optional): ID of the user to delete memories for. Defaults to None.
             agent_id (str, optional): ID of the agent to delete memories for. Defaults to None.
             run_id (str, optional): ID of the run to delete memories for. Defaults to None.
+            project (str, optional): Restrict deletion to memories tagged with this project
+                (stored in metadata by callers, e.g. the self-hosted server). Combine with
+                user_id/agent_id/run_id to scope a bulk delete to one project instead of a
+                user's/agent's/run's entire memory set. Defaults to None.
         """
         user_id = _validate_and_trim_entity_id(user_id, "user_id")
         agent_id = _validate_and_trim_entity_id(agent_id, "agent_id")
         run_id = _validate_and_trim_entity_id(run_id, "run_id")
+        project = _validate_and_trim_entity_id(project, "project")
 
         filters: Dict[str, Any] = {}
         if user_id:
@@ -1878,6 +1889,8 @@ class Memory(MemoryBase):
             filters["agent_id"] = agent_id
         if run_id:
             filters["run_id"] = run_id
+        if project:
+            filters["project"] = project
 
         if not filters:
             raise ValueError(
@@ -3502,7 +3515,7 @@ class AsyncMemory(MemoryBase):
             await display_first_run_notice_async(self, "async", "delete")
         return {"message": "Memory deleted successfully!"}
 
-    async def delete_all(self, user_id=None, agent_id=None, run_id=None):
+    async def delete_all(self, user_id=None, agent_id=None, run_id=None, project=None):
         """
         Delete all memories asynchronously.
 
@@ -3510,10 +3523,14 @@ class AsyncMemory(MemoryBase):
             user_id (str, optional): ID of the user to delete memories for. Defaults to None.
             agent_id (str, optional): ID of the agent to delete memories for. Defaults to None.
             run_id (str, optional): ID of the run to delete memories for. Defaults to None.
+            project (str, optional): Restrict deletion to memories tagged with this project.
+                Combine with user_id/agent_id/run_id to scope a bulk delete to one project
+                instead of a user's/agent's/run's entire memory set. Defaults to None.
         """
         user_id = _validate_and_trim_entity_id(user_id, "user_id")
         agent_id = _validate_and_trim_entity_id(agent_id, "agent_id")
         run_id = _validate_and_trim_entity_id(run_id, "run_id")
+        project = _validate_and_trim_entity_id(project, "project")
 
         filters = {}
         if user_id:
@@ -3522,6 +3539,8 @@ class AsyncMemory(MemoryBase):
             filters["agent_id"] = agent_id
         if run_id:
             filters["run_id"] = run_id
+        if project:
+            filters["project"] = project
 
         if not filters:
             raise ValueError(

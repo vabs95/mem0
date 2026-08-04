@@ -1005,6 +1005,34 @@ async def test_async_delete_all_continues_on_partial_failure(mock_sqlite, mock_l
     }
 
 
+@pytest.mark.asyncio
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.main.SQLiteManager')
+async def test_async_delete_all_with_project_filter(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
+    """async delete_all should scope by project the same way the sync version does."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import AsyncMemory
+    config = MemoryConfig()
+    memory = AsyncMemory(config)
+
+    mock_vector_store.list.side_effect = [([],)]
+
+    result = await memory.delete_all(user_id="test-user", project="my-project")
+
+    assert result == {"message": "Memories deleted successfully!"}
+    assert mock_vector_store.list.call_args_list[0].kwargs == {
+        "filters": {"user_id": "test-user", "project": "my-project"},
+        "top_k": 1000,
+    }
+
+
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
