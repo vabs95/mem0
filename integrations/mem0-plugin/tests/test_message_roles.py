@@ -27,6 +27,9 @@ class _FakeResp:
     def __exit__(self, *_):
         return False
 
+    def read(self):
+        return b""
+
 
 def _capture(monkeypatch, module):
     """Patch urlopen so store_summary posts nowhere; capture the request body."""
