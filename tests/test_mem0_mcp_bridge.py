@@ -46,6 +46,9 @@ def test_build_filters_basic():
 
 
 def test_build_filters_with_extra():
+    """A nested "metadata" dict in extra must lift to top-level keys --
+    self-hosted stores metadata fields flat on the payload, so a nested
+    "metadata" key matches nothing and silently zeroes out the query."""
     extra = {"metadata": {"type": "decision"}}
     filters = build_filters(
         user_id="demo-user",
@@ -53,9 +56,8 @@ def test_build_filters_with_extra():
         extra=extra,
     )
 
-    assert filters["user_id"] == "demo-user"
-    assert filters["project"] == "demo-project"
-    assert filters["metadata"] == {"type": "decision"}
+    assert filters == {"user_id": "demo-user", "project": "demo-project", "type": "decision"}
+    assert "metadata" not in filters
 
 
 def test_build_filters_translates_app_id_inside_extra():
@@ -72,3 +74,27 @@ def test_build_filters_translates_app_id_inside_extra():
 
     assert filters == {"user_id": "demo-user", "project": "demo-project", "type": "decision"}
     assert "app_id" not in filters
+
+
+def test_build_filters_flattens_and_clause_with_nested_metadata():
+    """Real failure mode from a live Codex session: the agent sent
+    {"AND": [{"user_id": ...}, {"app_id": ...}, {"metadata": {"type": ...}}]}
+    -- the exact cloud-style shape the hosted platform API accepts. Against
+    self-hosted this must collapse to a flat dict or the backend rejects it
+    with a 400 ("AND" isn't a recognized filter key)."""
+    filters = build_filters(
+        user_id="demo-user",
+        project="demo-project",
+        extra={
+            "AND": [
+                {"user_id": "demo-user"},
+                {"app_id": "demo-project"},
+                {"metadata": {"type": "decision"}},
+            ]
+        },
+    )
+
+    assert filters == {"user_id": "demo-user", "project": "demo-project", "type": "decision"}
+    assert "AND" not in filters
+    assert "app_id" not in filters
+    assert "metadata" not in filters

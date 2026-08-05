@@ -62,6 +62,47 @@ class Mem0SelfHostedClient:
         return response.json()
 
 
+def _flatten_filters(value: Any) -> Any:
+    """Recursively reshape cloud-style filters into the flat dict the
+    self-hosted backend expects.
+
+    Calling agents send the same filter shapes here as they do to the
+    hosted platform API: ``{"AND": [{"user_id": "x"}, {"metadata": {"type":
+    "y"}}]}``. Self-hosted stores every scoping/metadata field flat on the
+    payload -- there's no logical-operator support and no "metadata" field
+    to nest under -- so an AND clause has to collapse to a flat dict, a
+    nested "metadata" dict has to lift to top-level keys, and "app_id" (the
+    hosted-API name for this same concept) has to become "project". None of
+    this errors on its own; it just silently matches nothing, so it has to
+    be handled before the request reaches the backend, not after a 400 or
+    an empty result comes back.
+    """
+    if not isinstance(value, dict):
+        if isinstance(value, list):
+            return [_flatten_filters(item) for item in value]
+        return value
+
+    flat: dict[str, Any] = {}
+    if "AND" in value and isinstance(value["AND"], list):
+        for item in value["AND"]:
+            if isinstance(item, dict):
+                flat.update(item)
+        for k, v in value.items():
+            if k not in ("AND", "OR", "NOT"):
+                flat[k] = v
+    else:
+        flat = value
+
+    mapped: dict[str, Any] = {}
+    for key, item in flat.items():
+        if key == "metadata" and isinstance(item, dict):
+            for mk, mv in item.items():
+                mapped[mk] = _flatten_filters(mv)
+            continue
+        mapped["project" if key == "app_id" else key] = _flatten_filters(item)
+    return mapped
+
+
 def build_filters(
     *,
     user_id: str | None = None,
@@ -75,16 +116,9 @@ def build_filters(
     Entity IDs (user_id, agent_id, run_id) go at the top level.
     The optional ``project`` key is also placed at the top level so
     the vector store can filter on it as a metadata field.
-    Any ``extra`` filters are merged in as well.
-
-    ``extra`` commonly comes straight from the calling agent's own
-    ``filters`` tool argument, which may redundantly repeat ``app_id``
-    (mem0's hosted-API field name for this same concept -- see
-    ``_effective_project`` for the same alias on the top-level param).
-    Self-hosted memories store this as ``project``, not ``app_id``, on
-    every payload -- an unrecognized ``app_id`` key in the filters dict
-    doesn't error, it just matches nothing, silently zeroing out the
-    entire AND-matched query even when every other filter is correct.
+    ``extra`` -- typically the calling agent's own ``filters`` tool
+    argument, in whatever cloud-style shape it chose -- is flattened via
+    _flatten_filters before being merged in.
     """
     filters: dict[str, Any] = {}
     if user_id:
@@ -96,8 +130,5 @@ def build_filters(
     if project:
         filters["project"] = project
     if extra:
-        extra = dict(extra)
-        if "app_id" in extra:
-            extra.setdefault("project", extra.pop("app_id"))
-        filters.update(extra)
+        filters.update(_flatten_filters(extra))
     return filters
