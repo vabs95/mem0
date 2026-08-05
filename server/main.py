@@ -211,6 +211,15 @@ class SearchRequest(BaseModel):
     show_expired: Optional[bool] = Field(None, description="Include expired memories.")
 
 
+class DreamRequest(BaseModel):
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    run_id: Optional[str] = None
+    project: Optional[str] = None
+    similarity_threshold: Optional[float] = Field(0.90, description="Minimum vector similarity for clustering near-duplicates.")
+    limit: Optional[int] = Field(100, description="Maximum active memories to process during dream consolidation.")
+
+
 class GenerateInstructionsRequest(BaseModel):
     use_case: str = Field(..., description="Description of what the user will use Mem0 for.")
 
@@ -495,6 +504,23 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
+    except Exception:
+        raise upstream_error()
+
+
+@app.post("/memories/dream", summary="Consolidate memories (Dream)")
+@app.post("/dream", summary="Consolidate memories (Dream)")
+def dream_memories(dream_req: DreamRequest, _auth=Depends(verify_auth)):
+    """Consolidate near-duplicate memories and synthesize facts (Dream)."""
+    try:
+        return get_memory_instance().dream(
+            user_id=dream_req.user_id,
+            agent_id=dream_req.agent_id,
+            run_id=dream_req.run_id,
+            project=dream_req.project,
+            similarity_threshold=dream_req.similarity_threshold or 0.90,
+            limit=dream_req.limit or 100,
+        )
     except Exception:
         raise upstream_error()
 

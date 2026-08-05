@@ -510,7 +510,7 @@ def cmd_user_prompt(input_data: dict) -> None:
         except Exception:
             pass
     if msg_count >= 3 and adds < (msg_count // 3):
-        ctx_parts.append("After responding, store any new decisions, learnings, or preferences from this exchange via add_memory. Keep it to 1 sentence per memory.")
+        ctx_parts.append("After responding, store any new decisions, learnings, or preferences from this exchange via add_memory. Pass metadata with category ('decision', 'bug_fix', 'architecture', 'user_preference', 'task_learning') and importance rating (1-10 scale). Keep it to 1 sentence per memory.")
 
     if ctx_parts:
         output = {

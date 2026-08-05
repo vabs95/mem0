@@ -446,6 +446,13 @@ def _payload_is_expired(payload: Optional[Dict[str, Any]]) -> bool:
         return False
 
 
+def _payload_is_superseded(payload: Optional[Dict[str, Any]]) -> bool:
+    if not payload or not isinstance(payload, dict):
+        return False
+    return payload.get("status") == "superseded"
+
+
+
 setup_config()
 logger = logging.getLogger(__name__)
 
@@ -1344,6 +1351,8 @@ class Memory(MemoryBase):
         for mem in actual_memories:
             if not show_expired and _payload_is_expired(mem.payload):
                 continue
+            if _payload_is_superseded(mem.payload):
+                continue
             memory_item_dict = MemoryItem(
                 id=mem.id,
                 memory=mem.payload.get("data", ""),
@@ -1658,6 +1667,8 @@ class Memory(MemoryBase):
         for mem in semantic_results:
             payload = mem.payload if hasattr(mem, 'payload') else {}
             if not show_expired and _payload_is_expired(payload):
+                continue
+            if _payload_is_superseded(payload):
                 continue
             mem_id = str(mem.id)
             candidates.append({
@@ -1975,6 +1986,10 @@ class Memory(MemoryBase):
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
         new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+        if "status" not in new_metadata:
+            new_metadata["status"] = "active"
+        if "importance" not in new_metadata:
+            new_metadata["importance"] = 5
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -1991,7 +2006,154 @@ class Memory(MemoryBase):
             actor_id=new_metadata.get("actor_id"),
             role=new_metadata.get("role"),
         )
+        self._supersede_contradictions(memory_id, data, embeddings, new_metadata)
         return memory_id
+
+    def _supersede_contradictions(self, memory_id, data, embeddings, metadata):
+        """Detect and mark outdated contradictory memories in the same tenant scope."""
+        search_filters = {
+            k: v for k, v in (metadata or {}).items()
+            if k in ("user_id", "agent_id", "run_id", "project") and v
+        }
+        try:
+            candidates = self.vector_store.search(
+                query=data,
+                vectors=embeddings,
+                top_k=5,
+                filters=search_filters,
+            )
+            for candidate in candidates:
+                cand_id = str(candidate.id)
+                cand_score = candidate.score or 0.0
+                cand_payload = candidate.payload or {}
+                if cand_id == memory_id:
+                    continue
+                if cand_score >= 0.85 and cand_payload.get("status") != "superseded":
+                    updated_payload = deepcopy(cand_payload)
+                    updated_payload["status"] = "superseded"
+                    updated_payload["superseded_by_id"] = memory_id
+                    updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        self.vector_store.update(
+                            vector_id=cand_id,
+                            payload=updated_payload,
+                        )
+                        self.db.add_history(
+                            cand_id,
+                            updated_payload.get("data", ""),
+                            data,
+                            "SUPERSEDE",
+                            created_at=updated_payload.get("created_at"),
+                            updated_at=updated_payload["updated_at"],
+                        )
+                        logger.info(f"Memory {cand_id} marked as superseded by new memory {memory_id}")
+                    except Exception as err:
+                        logger.warning(f"Failed to mark memory {cand_id} as superseded: {err}")
+        except Exception as exc:
+            logger.warning(f"Supersede contradiction pass failed: {exc}")
+
+    def dream(self, user_id=None, agent_id=None, run_id=None, project=None, similarity_threshold=0.90, limit=100):
+        """Consolidate near-duplicate active memories within tenant scope into synthesized facts."""
+        filters = {k: v for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items() if v}
+        if any(k in filters for k in ("user_id", "agent_id", "run_id")):
+            memories = self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id, project=project, limit=limit)
+            raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
+        else:
+            raw_list = self._get_all_from_vector_store(filters=filters, limit=limit)
+        active_memories = [m for m in raw_list if not _payload_is_superseded(m) and m.get("status") != "merged"]
+
+        clusters = []
+        visited = set()
+
+        for mem in active_memories:
+            mem_id = mem.get("id")
+            if not mem_id or mem_id in visited:
+                continue
+            text = mem.get("memory", "")
+            if not text:
+                continue
+
+            embeddings = self.embedding_model.embed(text)
+            filters = {}
+            if user_id:
+                filters["user_id"] = user_id
+            if agent_id:
+                filters["agent_id"] = agent_id
+            if run_id:
+                filters["run_id"] = run_id
+            if project:
+                filters["project"] = project
+
+            try:
+                candidates = self.vector_store.search(
+                    query=text,
+                    vectors=embeddings,
+                    top_k=10,
+                    filters=filters,
+                )
+            except Exception:
+                candidates = []
+
+            cluster = [mem]
+            visited.add(mem_id)
+            for cand in candidates:
+                cand_id = str(cand.id)
+                cand_score = cand.score or 0.0
+                if cand_id != mem_id and cand_id not in visited and cand_score >= similarity_threshold:
+                    cand_mem = next((m for m in active_memories if m.get("id") == cand_id), None)
+                    if cand_mem:
+                        cluster.append(cand_mem)
+                        visited.add(cand_id)
+            if len(cluster) > 1:
+                clusters.append(cluster)
+
+        new_ids = []
+        merged_source_ids = []
+        for cluster in clusters:
+            texts = [c.get("memory", "") for c in cluster if c.get("memory")]
+            combined_text = " | ".join(texts)
+            importances = [c.get("importance", 5) for c in cluster if isinstance(c.get("importance"), (int, float))]
+            avg_importance = int(round(sum(importances) / len(importances))) if importances else 6
+
+            add_res = self.add(
+                [{"role": "user", "content": f"Consolidated memory: {combined_text}"}],
+                user_id=user_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                metadata={"category": "auto_synthesis", "importance": avg_importance},
+            )
+            new_id = add_res.get("results", [{}])[0].get("id") if isinstance(add_res, dict) else None
+            if new_id:
+                new_ids.append(new_id)
+                for source_mem in cluster:
+                    s_id = source_mem.get("id")
+                    if not s_id:
+                        continue
+                    merged_source_ids.append(s_id)
+                    updated_payload = deepcopy(source_mem)
+                    updated_payload["status"] = "merged"
+                    updated_payload["merged_into_id"] = new_id
+                    updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        self.vector_store.update(vector_id=s_id, payload=updated_payload)
+                        self.db.add_history(
+                            s_id,
+                            source_mem.get("memory", ""),
+                            combined_text,
+                            "MERGE",
+                            created_at=source_mem.get("created_at"),
+                            updated_at=updated_payload["updated_at"],
+                        )
+                    except Exception as err:
+                        logger.warning(f"Failed to update merged status for {s_id}: {err}")
+
+        return {
+            "processed": len(active_memories),
+            "clusters_merged": len(clusters),
+            "new_memories_created": len(new_ids),
+            "memories_merged": len(merged_source_ids),
+        }
+
 
     def _create_procedural_memory(self, messages, metadata=None, prompt=None):
         """
@@ -3003,6 +3165,8 @@ class AsyncMemory(MemoryBase):
         for mem in actual_memories:
             if not show_expired and _payload_is_expired(mem.payload):
                 continue
+            if _payload_is_superseded(mem.payload):
+                continue
             memory_item_dict = MemoryItem(
                 id=mem.id,
                 memory=mem.payload.get("data", ""),
@@ -3324,6 +3488,8 @@ class AsyncMemory(MemoryBase):
             payload = mem.payload if hasattr(mem, 'payload') else {}
             if not show_expired and _payload_is_expired(payload):
                 continue
+            if _payload_is_superseded(payload):
+                continue
             mem_id = str(mem.id)
             candidates.append({
                 "id": mem_id,
@@ -3643,6 +3809,10 @@ class AsyncMemory(MemoryBase):
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
         new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+        if "status" not in new_metadata:
+            new_metadata["status"] = "active"
+        if "importance" not in new_metadata:
+            new_metadata["importance"] = 5
 
         await asyncio.to_thread(
             self.vector_store.insert,
@@ -3663,7 +3833,159 @@ class AsyncMemory(MemoryBase):
             role=new_metadata.get("role"),
         )
 
+        await self._supersede_contradictions(memory_id, data, embeddings, new_metadata)
         return memory_id
+
+    async def _supersede_contradictions(self, memory_id, data, embeddings, metadata):
+        """Detect and mark outdated contradictory memories asynchronously."""
+        search_filters = {
+            k: v for k, v in (metadata or {}).items()
+            if k in ("user_id", "agent_id", "run_id", "project") and v
+        }
+        try:
+            candidates = await asyncio.to_thread(
+                self.vector_store.search,
+                query=data,
+                vectors=embeddings,
+                top_k=5,
+                filters=search_filters,
+            )
+            for candidate in candidates:
+                cand_id = str(candidate.id)
+                cand_score = candidate.score or 0.0
+                cand_payload = candidate.payload or {}
+                if cand_id == memory_id:
+                    continue
+                if cand_score >= 0.85 and cand_payload.get("status") != "superseded":
+                    updated_payload = deepcopy(cand_payload)
+                    updated_payload["status"] = "superseded"
+                    updated_payload["superseded_by_id"] = memory_id
+                    updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        await asyncio.to_thread(
+                            self.vector_store.update,
+                            vector_id=cand_id,
+                            payload=updated_payload,
+                        )
+                        await asyncio.to_thread(
+                            self.db.add_history,
+                            cand_id,
+                            updated_payload.get("data", ""),
+                            data,
+                            "SUPERSEDE",
+                            created_at=updated_payload.get("created_at"),
+                            updated_at=updated_payload["updated_at"],
+                        )
+                        logger.info(f"Memory {cand_id} marked as superseded by new memory {memory_id}")
+                    except Exception as err:
+                        logger.warning(f"Failed to mark memory {cand_id} as superseded: {err}")
+        except Exception as exc:
+            logger.warning(f"Supersede contradiction pass failed: {exc}")
+
+    async def dream(self, user_id=None, agent_id=None, run_id=None, project=None, similarity_threshold=0.90, limit=100):
+        """Consolidate near-duplicate active memories within tenant scope into synthesized facts asynchronously."""
+        filters = {k: v for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items() if v}
+        if any(k in filters for k in ("user_id", "agent_id", "run_id")):
+            memories = await self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id, project=project, limit=limit)
+            raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
+        else:
+            raw_list = await asyncio.to_thread(self._get_all_from_vector_store, filters=filters, limit=limit)
+        active_memories = [m for m in raw_list if not _payload_is_superseded(m) and m.get("status") != "merged"]
+
+        clusters = []
+        visited = set()
+
+        for mem in active_memories:
+            mem_id = mem.get("id")
+            if not mem_id or mem_id in visited:
+                continue
+            text = mem.get("memory", "")
+            if not text:
+                continue
+
+            embeddings = await self.embedding_model.aembed(text)
+            filters = {}
+            if user_id:
+                filters["user_id"] = user_id
+            if agent_id:
+                filters["agent_id"] = agent_id
+            if run_id:
+                filters["run_id"] = run_id
+            if project:
+                filters["project"] = project
+
+            try:
+                candidates = await asyncio.to_thread(
+                    self.vector_store.search,
+                    query=text,
+                    vectors=embeddings,
+                    top_k=10,
+                    filters=filters,
+                )
+            except Exception:
+                candidates = []
+
+            cluster = [mem]
+            visited.add(mem_id)
+            for cand in candidates:
+                cand_id = str(cand.id)
+                cand_score = cand.score or 0.0
+                if cand_id != mem_id and cand_id not in visited and cand_score >= similarity_threshold:
+                    cand_mem = next((m for m in active_memories if m.get("id") == cand_id), None)
+                    if cand_mem:
+                        cluster.append(cand_mem)
+                        visited.add(cand_id)
+            if len(cluster) > 1:
+                clusters.append(cluster)
+
+        new_ids = []
+        merged_source_ids = []
+        for cluster in clusters:
+            texts = [c.get("memory", "") for c in cluster if c.get("memory")]
+            combined_text = " | ".join(texts)
+            importances = [c.get("importance", 5) for c in cluster if isinstance(c.get("importance"), (int, float))]
+            avg_importance = int(round(sum(importances) / len(importances))) if importances else 6
+
+            add_res = await self.add(
+                [{"role": "user", "content": f"Consolidated memory: {combined_text}"}],
+                user_id=user_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                metadata={"category": "auto_synthesis", "importance": avg_importance},
+            )
+            new_id = add_res.get("results", [{}])[0].get("id") if isinstance(add_res, dict) else None
+            if new_id:
+                new_ids.append(new_id)
+                for source_mem in cluster:
+                    s_id = source_mem.get("id")
+                    if not s_id:
+                        continue
+                    merged_source_ids.append(s_id)
+                    updated_payload = deepcopy(source_mem)
+                    updated_payload["status"] = "merged"
+                    updated_payload["merged_into_id"] = new_id
+                    updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        await asyncio.to_thread(self.vector_store.update, vector_id=s_id, payload=updated_payload)
+                        await asyncio.to_thread(
+                            self.db.add_history,
+                            s_id,
+                            source_mem.get("memory", ""),
+                            combined_text,
+                            "MERGE",
+                            created_at=source_mem.get("created_at"),
+                            updated_at=updated_payload["updated_at"],
+                        )
+                    except Exception as err:
+                        logger.warning(f"Failed to update merged status for {s_id}: {err}")
+
+        return {
+            "processed": len(active_memories),
+            "clusters_merged": len(clusters),
+            "new_memories_created": len(new_ids),
+            "memories_merged": len(merged_source_ids),
+        }
+
 
     async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None):
         """

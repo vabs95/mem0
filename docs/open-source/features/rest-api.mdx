@@ -271,6 +271,7 @@ The OSS REST server exposes the following endpoints. None use the `/v1/` prefix.
 | `DELETE` | `/memories` | Delete all memories for an identifier |
 | `GET` | `/memories/{memory_id}/history` | Get memory history |
 | `POST` | `/search` | Search memories |
+| `POST` | `/memories/dream` | Consolidate near-duplicate memories and synthesize facts (Dream) |
 | `POST` | `/reset` | Reset all memories |
 
 `project` is an additional narrowing filter on top of `user_id`/`agent_id`/`run_id` — it's not an identity scope on its own, so at least one of the other three is still required to list or delete a specific set of memories. It's stored as a regular metadata field (`metadata.project`), the same convention the MCP bridge uses to translate the hosted platform's `app_id`.

@@ -4,13 +4,16 @@ import * as React from "react";
 import Link from "next/link";
 import {
   Activity,
+  Brain,
   ChartLine,
   ChevronDown,
   Clock,
   FolderInput,
   GalleryVerticalEnd,
+  GitCompare,
   KeyRound,
   Settings,
+  Sparkles,
   Tags,
   Users,
   WebhookIcon,
@@ -75,6 +78,24 @@ export function MainNav({
                     url: "/dashboard/memories",
                     icon: GalleryVerticalEnd,
                     active: pathname === "/dashboard/memories",
+                  },
+                  {
+                    title: "Contradictions",
+                    url: "/dashboard/contradictions",
+                    icon: GitCompare,
+                    active: pathname === "/dashboard/contradictions",
+                  },
+                  {
+                    title: "Scoring Debugger",
+                    url: "/dashboard/scoring-debugger",
+                    icon: Brain,
+                    active: pathname === "/dashboard/scoring-debugger",
+                  },
+                  {
+                    title: "Dream Consolidation",
+                    url: "/dashboard/dream",
+                    icon: Sparkles,
+                    active: pathname === "/dashboard/dream",
                   },
                   {
                     title: "Entities",

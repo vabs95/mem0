@@ -110,6 +110,8 @@ def store_exchange(api_key: str, messages: list[dict], user_id: str,
                    project_id: str, branch: str, session_id: str) -> bool:
     metadata = {
         "type": "auto_capture",
+        "category": "auto_capture",
+        "importance": 6,
         "source": "auto_capture",
         "confidence": 0.7,
     }

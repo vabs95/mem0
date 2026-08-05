@@ -144,6 +144,8 @@ class TestScoreAndRank:
             "semantic_score": 0.8,
             "bm25_score": 0.6,
             "entity_boost": 0.3,
+            "importance_score": 0.0,
+            "recency_score": 0.0,
             "raw_score": pytest.approx(1.7),
             "max_possible_score": 2.5,
             "final_score": pytest.approx(0.68),
@@ -159,3 +161,32 @@ class TestScoreAndRank:
 class TestEntityBoostWeight:
     def test_weight_value(self):
         assert ENTITY_BOOST_WEIGHT == 0.5
+
+
+class TestImportanceAndRecencyScoring:
+    def test_importance_weighting(self):
+        from mem0.utils.scoring import score_and_rank
+
+        results = [{"id": "a", "score": 0.8, "payload": {"importance": 10}}]
+        scored = score_and_rank(results, {}, {}, threshold=0.1, top_k=10, use_recency_decay=False, explain=True)
+        assert len(scored) == 1
+        # max_possible = 1.0 (semantic) + 0.3 (importance) = 1.3
+        # raw = 0.8 + (1.0 * 0.3) = 1.1
+        # final = 1.1 / 1.3
+        expected = 1.1 / 1.3
+        assert scored[0]["score"] == pytest.approx(expected)
+        assert scored[0]["score_details"]["importance_score"] == 1.0
+
+    def test_recency_decay_scoring(self):
+        from datetime import datetime, timezone
+        from mem0.utils.scoring import compute_recency_score, score_and_rank
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        score = compute_recency_score(now_iso, half_life_days=30.0)
+        assert score > 0.99  # Brand new memory -> ~1.0
+
+        results = [{"id": "a", "score": 0.8, "payload": {"created_at": now_iso}}]
+        scored = score_and_rank(results, {}, {}, threshold=0.1, top_k=10, use_recency_decay=True, explain=True)
+        assert len(scored) == 1
+        assert scored[0]["score_details"]["recency_score"] > 0.95
+

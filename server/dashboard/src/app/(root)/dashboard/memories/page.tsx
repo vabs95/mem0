@@ -53,6 +53,7 @@ export default function MemoriesPage() {
   const [agentId, setAgentId] = useState(ALL_VALUES);
   const [runId, setRunId] = useState(ALL_VALUES);
   const [project, setProject] = useState(ALL_VALUES);
+  const [statusFilter, setStatusFilter] = useState("all");
   const [dateRange, setDateRange] = useState<DateRangeKey>("all");
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
@@ -95,10 +96,18 @@ export default function MemoriesPage() {
     void refetch();
   }, [agentId, runId, project]);
 
+  const filteredByStatus =
+    statusFilter === "all"
+      ? rawMemories
+      : rawMemories.filter((m: any) => {
+          const st = m.status || m.metadata?.status || "active";
+          return st === statusFilter;
+        });
+
   const memories =
     dateRange === "all"
-      ? rawMemories
-      : rawMemories.filter((m) => {
+      ? filteredByStatus
+      : filteredByStatus.filter((m) => {
           if (!m.created_at) return false;
           const range = DATE_RANGES[dateRange];
           return range.days ? new Date(m.created_at) >= subDays(new Date(), range.days) : true;
@@ -230,6 +239,17 @@ export default function MemoriesPage() {
                 {id}
               </SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-[140px]">
+            <SelectValue placeholder="All statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="superseded">Superseded</SelectItem>
+            <SelectItem value="merged">Merged</SelectItem>
           </SelectContent>
         </Select>
         <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRangeKey)}>

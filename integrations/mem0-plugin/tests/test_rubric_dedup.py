@@ -25,7 +25,10 @@ def _clean_rubric_flag(tmp_path, monkeypatch):
     cmd_user_prompt -- matching _run_hook's MEM0_PROJECT_ID=test-project.
     """
     monkeypatch.setenv("MEM0_RUBRIC_DIR", str(tmp_path))
-    msg_count_file = "/tmp/mem0_msg_count_testuser_test-project"
+    import tempfile
+    msg_count_file = os.path.join(tempfile.gettempdir(), "mem0_msg_count_testuser_test-project")
+    if os.path.exists(msg_count_file):
+        os.unlink(msg_count_file)
     yield
     if os.path.exists(msg_count_file):
         os.unlink(msg_count_file)
@@ -36,6 +39,7 @@ def _run_hook(prompt: str, env_overrides: dict | None = None, session_id: str = 
     env = {
         **os.environ,
         "USER": "testuser",
+        "MEM0_USER_ID": "testuser",
         "MEM0_API_KEY": "test-key-123",
         "MEM0_RESOLVED_USER_ID": "testuser",
         "MEM0_PROJECT_ID": "test-project",

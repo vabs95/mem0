@@ -2,7 +2,7 @@
   "mcpServers": {
     "mem0": {
       "type": "http",
-      "url": "https://mcp.mem0.ai/mcp",
+      "url": "https://api.mem0.vabs.dev/mcp",
       "bearer_token_env_var": "MEM0_API_KEY",
       "http_headers": {
         "X-Source-Agent": "codex"

@@ -267,6 +267,14 @@ python -m benchmarks.beam.run --project-name my-test --backend cloud --mem0-api-
 | `delete_all(*, user_id, agent_id, run_id, project)` | Delete all memories |
 | `history(memory_id)` | Get change history for a memory |
 
+### Memory Scoring & Supersede Contradiction Lifecycle
+
+- **Hybrid Search Scoring (`mem0.utils.scoring.score_and_rank`)**:
+  Combines Cosine Vector Similarity, BM25 Keyword Search, Entity Boosts, Importance Rating (1-10 scale), and Exponential Recency Time Decay ($\exp(-\Delta t / 30.0)$ days).
+  $$\text{FinalScore} = \min\left(1.0, \, \frac{\text{VectorSim} + \text{BM25} + \text{EntityBoost} + 0.3 \cdot \text{Importance} + 0.2 \cdot \text{Recency}}{\text{MaxPossible}}\right)$$
+- **Supersede Contradiction Engine**:
+  On memory addition (`add()`), existing vector-similar facts ($\text{sim} \ge 0.85$) within tenant scope are automatically marked as `status = "superseded"` with `superseded_by_id` set to the new memory ID. Superseded memories are hidden from `search()` and `get_all()` by default.
+
 ### TypeScript
 
 | Export | Purpose | Import |

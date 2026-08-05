@@ -1178,3 +1178,59 @@ class TestAddPipelineEntityEmbeddingCountGuard:
         assert any("padding/truncating" in r.message for r in caplog.records), (
             "expected count-mismatch warning was not emitted"
         )
+
+
+class TestPayloadIsSuperseded:
+    def test_payload_is_superseded_detection(self):
+        from mem0.memory.main import _payload_is_superseded
+
+        assert _payload_is_superseded(None) is False
+        assert _payload_is_superseded({}) is False
+        assert _payload_is_superseded({"status": "active"}) is False
+        assert _payload_is_superseded({"status": "superseded"}) is True
+
+    def test_supersede_contradictions_pass(self, mocker):
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        candidate = SimpleNamespace(id="cand1", score=0.90, payload={"status": "active", "data": "Old fact"})
+        memory.vector_store.search = MagicMock(return_value=[candidate])
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        memory._supersede_contradictions("new1", "New fact", [0.1, 0.2], {"user_id": "u1"})
+
+        assert memory.vector_store.update.call_count == 1
+        updated_call = memory.vector_store.update.call_args
+        assert updated_call.kwargs["vector_id"] == "cand1"
+        assert updated_call.kwargs["payload"]["status"] == "superseded"
+        assert updated_call.kwargs["payload"]["superseded_by_id"] == "new1"
+
+
+class TestMemoryDream:
+    def test_memory_dream_consolidation(self, mocker):
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        mem1 = {"id": "m1", "memory": "Prefers Python", "status": "active", "importance": 8}
+        mem2 = {"id": "m2", "memory": "Prefers Python language", "status": "active", "importance": 6}
+        memory.get_all = MagicMock(return_value={"results": [mem1, mem2]})
+        memory.embedding_model.embed = MagicMock(return_value=[0.1, 0.2])
+
+        cand = SimpleNamespace(id="m2", score=0.95, payload=mem2)
+        memory.vector_store.search = MagicMock(return_value=[cand])
+        memory.add = MagicMock(return_value={"results": [{"id": "synth1"}]})
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        res = memory.dream(user_id="u1")
+
+        assert res["clusters_merged"] == 1
+        assert res["new_memories_created"] == 1
+        assert res["memories_merged"] == 2
+        assert memory.add.call_count == 1
+
+
+
