@@ -13,7 +13,7 @@ if MCP_DIR not in sys.path:
 pytest.importorskip("mcp", reason="mcp not installed (see server/mcp/requirements.txt)")
 
 from mem0_mcp_bridge.client import build_filters  # noqa: E402
-from mem0_mcp_bridge.server import _effective_project  # noqa: E402
+from mem0_mcp_bridge.server import _effective_project, add_memory  # noqa: E402
 
 
 def test_effective_project_prefers_explicit_project():
@@ -98,3 +98,27 @@ def test_build_filters_flattens_and_clause_with_nested_metadata():
     assert "AND" not in filters
     assert "app_id" not in filters
     assert "metadata" not in filters
+
+
+def test_add_memory_merges_importance_and_category_into_metadata(monkeypatch):
+    """importance/category are dedicated MCP tool params for discoverability,
+    but the backend only understands them as payload/metadata fields -- they
+    must be merged into the outgoing metadata dict, not sent as separate
+    top-level request fields the backend would silently ignore."""
+    captured = {}
+
+    def fake_request(method, path, *, json_body=None, params=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_body"] = json_body
+        return {"ok": True}
+
+    from mem0_mcp_bridge import server as server_module
+
+    monkeypatch.setattr(server_module, "_client", lambda: type("C", (), {"request": staticmethod(fake_request)})())
+
+    add_memory(text="likes dark mode", user_id="demo-user", importance=8, category="preference")
+
+    assert captured["path"] == "/memories"
+    assert captured["json_body"]["metadata"]["importance"] == 8
+    assert captured["json_body"]["metadata"]["category"] == "preference"

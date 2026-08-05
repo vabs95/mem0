@@ -148,6 +148,10 @@ def add_memory(
         str | None, Field(default=None, description="Alias for 'project' (mem0 hosted-API field name).")
     ] = None,
     metadata: Annotated[dict[str, Any] | None, Field(default=None, description="Metadata JSON.")] = None,
+    importance: Annotated[
+        int | None, Field(default=None, ge=1, le=10, description="Importance 1-10, boosts ranking in hybrid search. Defaults to 5.")
+    ] = None,
+    category: Annotated[str | None, Field(default=None, description="Free-form category label for filtering.")] = None,
     infer: Annotated[bool, Field(default=True, description="Whether Mem0 should extract facts.")] = True,
 ) -> str:
     if not messages:
@@ -159,6 +163,10 @@ def add_memory(
     effective_metadata = _source_metadata(metadata)
     if project:
         effective_metadata["project"] = project
+    if importance is not None:
+        effective_metadata["importance"] = importance
+    if category is not None:
+        effective_metadata["category"] = category
 
     payload: dict[str, Any] = {
         "messages": messages,
@@ -185,6 +193,10 @@ def search_memories(
     filters: Annotated[dict[str, Any] | None, Field(default=None, description="Additional structured filters.")] = None,
     top_k: Annotated[int | None, Field(default=None, description="Maximum results.")] = None,
     threshold: Annotated[float | None, Field(default=None, description="Minimum similarity score.")] = None,
+    show_superseded: Annotated[
+        bool | None,
+        Field(default=None, description="Include memories marked superseded or merged by the Supersede/Dream lifecycle."),
+    ] = None,
 ) -> str:
     search_filters = build_filters(
         user_id=_effective_user_id(user_id),
@@ -198,6 +210,7 @@ def search_memories(
         "filters": search_filters,
         "top_k": top_k,
         "threshold": threshold,
+        "show_superseded": show_superseded,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
     return _json_call(_client().request, "POST", "/search", json_body=payload)
@@ -213,10 +226,15 @@ def get_memories(
         str | None, Field(default=None, description="Alias for 'project' (mem0 hosted-API field name).")
     ] = None,
     top_k: Annotated[int | None, Field(default=None, description="Maximum memories to list.")] = None,
+    show_superseded: Annotated[
+        bool | None,
+        Field(default=None, description="Include memories marked superseded or merged by the Supersede/Dream lifecycle."),
+    ] = None,
 ) -> str:
     params: dict[str, Any] = {
         "user_id": _effective_user_id(user_id),
         "top_k": top_k,
+        "show_superseded": show_superseded,
     }
     if agent_id:
         params["agent_id"] = agent_id
@@ -273,6 +291,38 @@ def delete_all_memories(
     if project:
         params["project"] = project
     return _json_call(_client().request, "DELETE", "/memories", params=params)
+
+
+@server.tool(
+    description=(
+        "Run Dream consolidation: clusters near-duplicate active memories within a scope "
+        "and merges them into synthesized memories. Use sparingly -- this is a bulk write "
+        "operation, not a read."
+    )
+)
+def dream_consolidate(
+    user_id: Annotated[str | None, Field(default=None, description="User scope (default: from config header).")] = None,
+    agent_id: Annotated[str | None, Field(default=None, description="Agent scope.")] = None,
+    run_id: Annotated[str | None, Field(default=None, description="Run scope.")] = None,
+    project: Annotated[str | None, Field(default=None, description="Project scope.")] = None,
+    app_id: Annotated[
+        str | None, Field(default=None, description="Alias for 'project' (mem0 hosted-API field name).")
+    ] = None,
+    similarity_threshold: Annotated[
+        float | None, Field(default=None, description="Minimum vector similarity for clustering near-duplicates. Default 0.90.")
+    ] = None,
+    limit: Annotated[int | None, Field(default=None, description="Maximum active memories to process. Default 100.")] = None,
+) -> str:
+    payload: dict[str, Any] = {
+        "user_id": _effective_user_id(user_id),
+        "agent_id": agent_id,
+        "run_id": run_id,
+        "project": _effective_project(project, app_id),
+        "similarity_threshold": similarity_threshold,
+        "limit": limit,
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+    return _json_call(_client().request, "POST", "/memories/dream", json_body=payload)
 
 
 @server.tool(description="List users, agents, runs, and projects currently holding memories.")

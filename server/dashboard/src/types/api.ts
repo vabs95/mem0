@@ -1,3 +1,12 @@
+export interface MemoryMetadata {
+  status?: "active" | "superseded" | "merged" | string;
+  category?: string;
+  importance?: number;
+  superseded_by_id?: string;
+  merged_into_id?: string;
+  [key: string]: unknown;
+}
+
 export interface Memory {
   id: string;
   memory: string;
@@ -5,6 +14,10 @@ export interface Memory {
   agent_id?: string;
   created_at?: string;
   updated_at?: string;
+  // Supersede/Dream lifecycle fields live under metadata, not as flat
+  // top-level fields -- see server's _get_all_from_vector_store, which nests
+  // any payload key outside its core/promoted set under "metadata".
+  metadata?: MemoryMetadata;
 }
 
 export interface ApiKey {

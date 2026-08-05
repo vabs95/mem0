@@ -1190,9 +1190,11 @@ class TestPayloadIsSuperseded:
         assert _payload_is_superseded({"status": "superseded"}) is True
 
     def test_supersede_contradictions_pass(self, mocker):
+        """A high-similarity candidate the LLM confirms as contradictory gets superseded."""
         mock_llm, mock_vs = _setup_mocks(mocker)
         memory = Memory()
         memory.config = mocker.MagicMock()
+        memory.llm.generate_response = MagicMock(return_value='{"contradicts": true}')
 
         candidate = SimpleNamespace(id="cand1", score=0.90, payload={"status": "active", "data": "Old fact"})
         memory.vector_store.search = MagicMock(return_value=[candidate])
@@ -1206,6 +1208,41 @@ class TestPayloadIsSuperseded:
         assert updated_call.kwargs["vector_id"] == "cand1"
         assert updated_call.kwargs["payload"]["status"] == "superseded"
         assert updated_call.kwargs["payload"]["superseded_by_id"] == "new1"
+
+    def test_supersede_skipped_when_llm_says_not_contradictory(self, mocker):
+        """High vector similarity alone isn't enough -- a near-duplicate or
+        merely-related candidate the LLM says doesn't contradict must NOT be
+        superseded."""
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+        memory.llm.generate_response = MagicMock(return_value='{"contradicts": false}')
+
+        candidate = SimpleNamespace(id="cand1", score=0.92, payload={"status": "active", "data": "Related fact"})
+        memory.vector_store.search = MagicMock(return_value=[candidate])
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        memory._supersede_contradictions("new1", "New fact", [0.1, 0.2], {"user_id": "u1"})
+
+        assert memory.vector_store.update.call_count == 0
+
+    def test_supersede_fails_closed_on_llm_error(self, mocker):
+        """If the LLM confirmation call itself fails (bad response, provider
+        error), the candidate must be left alone rather than silently hidden."""
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+        memory.llm.generate_response = MagicMock(side_effect=RuntimeError("provider down"))
+
+        candidate = SimpleNamespace(id="cand1", score=0.95, payload={"status": "active", "data": "Old fact"})
+        memory.vector_store.search = MagicMock(return_value=[candidate])
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        memory._supersede_contradictions("new1", "New fact", [0.1, 0.2], {"user_id": "u1"})
+
+        assert memory.vector_store.update.call_count == 0
 
 
 class TestMemoryDream:

@@ -209,6 +209,9 @@ class SearchRequest(BaseModel):
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
     explain: Optional[bool] = Field(None, description="Include score details for each search result.")
     show_expired: Optional[bool] = Field(None, description="Include expired memories.")
+    show_superseded: Optional[bool] = Field(
+        None, description="Include memories marked superseded or merged by the Supersede/Dream lifecycle."
+    )
 
 
 class DreamRequest(BaseModel):
@@ -430,6 +433,7 @@ def get_all_memories(
     project: Optional[str] = None,
     top_k: Optional[int] = Query(None, ge=0, le=ALL_MEMORIES_LIMIT),
     show_expired: bool = Query(False),
+    show_superseded: bool = Query(False),
     _auth=Depends(verify_auth),
 ):
     """Retrieve stored memories. Lists all memories when no identifier is provided (admin only).
@@ -457,6 +461,7 @@ def get_all_memories(
         if top_k is not None:
             params["top_k"] = top_k
         params["show_expired"] = show_expired
+        params["show_superseded"] = show_superseded
         return get_memory_instance().get_all(**params)
     except HTTPException:
         raise
@@ -499,6 +504,8 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
             params["explain"] = search_req.explain
         if search_req.show_expired is not None:
             params["show_expired"] = search_req.show_expired
+        if search_req.show_superseded is not None:
+            params["show_superseded"] = search_req.show_superseded
         return get_memory_instance().search(query=search_req.query, filters=filters, **params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -509,7 +516,6 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
 
 
 @app.post("/memories/dream", summary="Consolidate memories (Dream)")
-@app.post("/dream", summary="Consolidate memories (Dream)")
 def dream_memories(dream_req: DreamRequest, _auth=Depends(verify_auth)):
     """Consolidate near-duplicate memories and synthesize facts (Dream)."""
     try:

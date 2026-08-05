@@ -452,6 +452,19 @@ def _payload_is_superseded(payload: Optional[Dict[str, Any]]) -> bool:
     return payload.get("status") == "superseded"
 
 
+_SUPERSEDE_CONTRADICTION_PROMPT = """You are checking whether a NEW fact actually \
+contradicts or invalidates an EXISTING fact, versus the two merely being similar, \
+compatible, or duplicates of each other.
+
+EXISTING fact: {existing}
+NEW fact: {new}
+
+Respond with strict JSON only: {{"contradicts": true or false}}
+- true: the NEW fact makes the EXISTING fact outdated, wrong, or superseded.
+- false: the facts are compatible, near-duplicates, unrelated, or about different \
+things -- even if worded similarly.
+"""
+
 
 setup_config()
 logger = logging.getLogger(__name__)
@@ -1255,6 +1268,7 @@ class Memory(MemoryBase):
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 20,
         show_expired: bool = False,
+        show_superseded: bool = False,
         **kwargs,
     ):
         """
@@ -1266,6 +1280,8 @@ class Memory(MemoryBase):
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
             show_expired (bool, optional): Include expired memories. Defaults to False.
+            show_superseded (bool, optional): Include memories marked superseded or
+                merged by the Supersede/Dream lifecycle. Defaults to False.
 
         Returns:
             dict: A dictionary containing a list of memories under the "results" key.
@@ -1304,7 +1320,7 @@ class Memory(MemoryBase):
             )
 
         limit = top_k
-        fetch_limit = limit if show_expired else max(limit * 4, 60)
+        fetch_limit = limit if (show_expired and show_superseded) else max(limit * 4, 60)
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
@@ -1312,7 +1328,9 @@ class Memory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"}
         )
 
-        all_memories_result = self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit)
+        all_memories_result = self._get_all_from_vector_store(
+            effective_filters, fetch_limit, show_expired, limit, show_superseded=show_superseded
+        )
 
         if scale_threshold_notice:
             display_scale_threshold_notice(self, "sync", "get_all", *scale_threshold_notice)
@@ -1320,7 +1338,7 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "get_all")
         return {"results": all_memories_result}
 
-    def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None):
+    def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, show_superseded=False):
         memories_result = self.vector_store.list(filters=filters, top_k=limit)
 
         # Handle different vector store return formats by inspecting first element
@@ -1351,7 +1369,7 @@ class Memory(MemoryBase):
         for mem in actual_memories:
             if not show_expired and _payload_is_expired(mem.payload):
                 continue
-            if _payload_is_superseded(mem.payload):
+            if not show_superseded and _payload_is_superseded(mem.payload):
                 continue
             memory_item_dict = MemoryItem(
                 id=mem.id,
@@ -1386,6 +1404,7 @@ class Memory(MemoryBase):
         explain: bool = False,
         reference_date: Optional[Any] = None,
         show_expired: bool = False,
+        show_superseded: bool = False,
         **kwargs,
     ):
         """
@@ -1491,7 +1510,8 @@ class Memory(MemoryBase):
 
         search_start = time.perf_counter()
         original_memories = self._search_vector_store(
-            query, effective_filters, limit, threshold, explain=explain, show_expired=show_expired
+            query, effective_filters, limit, threshold, explain=explain, show_expired=show_expired,
+            show_superseded=show_superseded
         )
         search_elapsed_seconds = time.perf_counter() - search_start
 
@@ -1624,7 +1644,7 @@ class Memory(MemoryBase):
                 return True
         return False
 
-    def _search_vector_store(self, query, filters, limit, threshold=0.1, explain=False, show_expired=False):
+    def _search_vector_store(self, query, filters, limit, threshold=0.1, explain=False, show_expired=False, show_superseded=False):
         # Guard against None threshold (backward compat)
         if threshold is None:
             threshold = 0.1
@@ -1668,7 +1688,7 @@ class Memory(MemoryBase):
             payload = mem.payload if hasattr(mem, 'payload') else {}
             if not show_expired and _payload_is_expired(payload):
                 continue
-            if _payload_is_superseded(payload):
+            if not show_superseded and _payload_is_superseded(payload):
                 continue
             mem_id = str(mem.id)
             candidates.append({
@@ -2009,6 +2029,31 @@ class Memory(MemoryBase):
         self._supersede_contradictions(memory_id, data, embeddings, new_metadata)
         return memory_id
 
+    def _llm_confirms_contradiction(self, existing_text: str, new_text: str) -> bool:
+        """Ask the LLM whether new_text actually contradicts existing_text.
+
+        Fails closed: any error, empty response, or unparseable JSON is
+        treated as "not a contradiction" -- vector similarity alone is not
+        reliable enough to silently hide a memory from search results, so
+        when the confirmation step can't run, the safer default is to leave
+        the existing memory visible rather than risk losing it.
+        """
+        try:
+            response = self.llm.generate_response(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _SUPERSEDE_CONTRADICTION_PROMPT.format(existing=existing_text, new=new_text),
+                    }
+                ],
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(remove_code_blocks(response))
+            return bool(parsed.get("contradicts"))
+        except Exception as exc:
+            logger.warning(f"Supersede LLM confirmation failed, treating as no-contradiction: {exc}")
+            return False
+
     def _supersede_contradictions(self, memory_id, data, embeddings, metadata):
         """Detect and mark outdated contradictory memories in the same tenant scope."""
         search_filters = {
@@ -2029,6 +2074,13 @@ class Memory(MemoryBase):
                 if cand_id == memory_id:
                     continue
                 if cand_score >= 0.85 and cand_payload.get("status") != "superseded":
+                    # Vector similarity alone flags candidates, it doesn't confirm
+                    # them -- two facts can be similarly worded without one
+                    # invalidating the other (rephrasing, unrelated-but-adjacent
+                    # facts). Only mark superseded when the LLM agrees this is an
+                    # actual contradiction, not just a near-duplicate.
+                    if not self._llm_confirms_contradiction(cand_payload.get("data", ""), data):
+                        continue
                     updated_payload = deepcopy(cand_payload)
                     updated_payload["status"] = "superseded"
                     updated_payload["superseded_by_id"] = memory_id
@@ -3069,6 +3121,7 @@ class AsyncMemory(MemoryBase):
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 20,
         show_expired: bool = False,
+        show_superseded: bool = False,
         **kwargs,
     ):
         """
@@ -3118,7 +3171,7 @@ class AsyncMemory(MemoryBase):
             )
 
         limit = top_k
-        fetch_limit = limit if show_expired else max(limit * 4, 60)
+        fetch_limit = limit if (show_expired and show_superseded) else max(limit * 4, 60)
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
@@ -3126,7 +3179,9 @@ class AsyncMemory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "async"}
         )
 
-        all_memories_result = await self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit)
+        all_memories_result = await self._get_all_from_vector_store(
+            effective_filters, fetch_limit, show_expired, limit, show_superseded=show_superseded
+        )
 
         if scale_threshold_notice:
             await display_scale_threshold_notice_async(self, "async", "get_all", *scale_threshold_notice)
@@ -3134,7 +3189,7 @@ class AsyncMemory(MemoryBase):
             await display_first_run_notice_async(self, "async", "get_all")
         return {"results": all_memories_result}
 
-    async def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None):
+    async def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, show_superseded=False):
         memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, top_k=limit)
 
         # Handle different vector store return formats by inspecting first element
@@ -3165,7 +3220,7 @@ class AsyncMemory(MemoryBase):
         for mem in actual_memories:
             if not show_expired and _payload_is_expired(mem.payload):
                 continue
-            if _payload_is_superseded(mem.payload):
+            if not show_superseded and _payload_is_superseded(mem.payload):
                 continue
             memory_item_dict = MemoryItem(
                 id=mem.id,
@@ -3200,6 +3255,7 @@ class AsyncMemory(MemoryBase):
         explain: bool = False,
         reference_date: Optional[Any] = None,
         show_expired: bool = False,
+        show_superseded: bool = False,
         **kwargs,
     ):
         """
@@ -3309,7 +3365,8 @@ class AsyncMemory(MemoryBase):
 
         search_start = time.perf_counter()
         original_memories = await self._search_vector_store(
-            query, effective_filters, limit, threshold, explain=explain, show_expired=show_expired
+            query, effective_filters, limit, threshold, explain=explain, show_expired=show_expired,
+            show_superseded=show_superseded
         )
         search_elapsed_seconds = time.perf_counter() - search_start
 
@@ -3445,7 +3502,7 @@ class AsyncMemory(MemoryBase):
                 return True
         return False
 
-    async def _search_vector_store(self, query, filters, limit, threshold=0.1, explain=False, show_expired=False):
+    async def _search_vector_store(self, query, filters, limit, threshold=0.1, explain=False, show_expired=False, show_superseded=False):
         if threshold is None:
             threshold = 0.1
 
@@ -3488,7 +3545,7 @@ class AsyncMemory(MemoryBase):
             payload = mem.payload if hasattr(mem, 'payload') else {}
             if not show_expired and _payload_is_expired(payload):
                 continue
-            if _payload_is_superseded(payload):
+            if not show_superseded and _payload_is_superseded(payload):
                 continue
             mem_id = str(mem.id)
             candidates.append({
@@ -3836,6 +3893,26 @@ class AsyncMemory(MemoryBase):
         await self._supersede_contradictions(memory_id, data, embeddings, new_metadata)
         return memory_id
 
+    async def _llm_confirms_contradiction(self, existing_text: str, new_text: str) -> bool:
+        """Async counterpart of Memory._llm_confirms_contradiction. Fails closed --
+        see that method's docstring for why."""
+        try:
+            response = await asyncio.to_thread(
+                self.llm.generate_response,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _SUPERSEDE_CONTRADICTION_PROMPT.format(existing=existing_text, new=new_text),
+                    }
+                ],
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(remove_code_blocks(response))
+            return bool(parsed.get("contradicts"))
+        except Exception as exc:
+            logger.warning(f"Supersede LLM confirmation failed, treating as no-contradiction: {exc}")
+            return False
+
     async def _supersede_contradictions(self, memory_id, data, embeddings, metadata):
         """Detect and mark outdated contradictory memories asynchronously."""
         search_filters = {
@@ -3857,6 +3934,8 @@ class AsyncMemory(MemoryBase):
                 if cand_id == memory_id:
                     continue
                 if cand_score >= 0.85 and cand_payload.get("status") != "superseded":
+                    if not await self._llm_confirms_contradiction(cand_payload.get("data", ""), data):
+                        continue
                     updated_payload = deepcopy(cand_payload)
                     updated_payload["status"] = "superseded"
                     updated_payload["superseded_by_id"] = memory_id

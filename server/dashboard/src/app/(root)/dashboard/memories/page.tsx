@@ -82,6 +82,10 @@ export default function MemoriesPage() {
         run_id: runId === ALL_VALUES ? undefined : runId,
         project: project === ALL_VALUES ? undefined : project,
         top_k: MEMORY_FETCH_LIMIT,
+        // Always fetch superseded/merged too -- GET /memories excludes them
+        // by default, and the Status filter below needs them client-side to
+        // filter down to, the same way the other filters on this page work.
+        show_superseded: true,
       };
       const res = await api.get(MEMORY_ENDPOINTS.BASE, { params });
       const raw = res.data?.results ?? res.data ?? [];
@@ -99,10 +103,7 @@ export default function MemoriesPage() {
   const filteredByStatus =
     statusFilter === "all"
       ? rawMemories
-      : rawMemories.filter((m: any) => {
-          const st = m.status || m.metadata?.status || "active";
-          return st === statusFilter;
-        });
+      : rawMemories.filter((m) => (m.metadata?.status ?? "active") === statusFilter);
 
   const memories =
     dateRange === "all"

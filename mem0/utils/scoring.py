@@ -124,6 +124,33 @@ def score_and_rank(
     has_bm25 = bool(bm25_scores)
     has_entity = bool(entity_boosts)
 
+    # Determine whether importance/recency are in play ONCE for the whole
+    # batch, not per-candidate -- max_possible is the scoring denominator, so
+    # if it varied per-candidate (e.g. one has an importance field and its
+    # neighbor doesn't), otherwise-identical candidates would be divided by
+    # different numbers and their relative ranking would be distorted by
+    # incidental payload completeness rather than actual signal strength.
+    # A candidate missing a field that the batch is otherwise using gets a
+    # neutral 0.5 for that signal instead of being excluded from it.
+    has_importance = any(
+        isinstance(r.get("payload"), dict) and r["payload"].get("importance") is not None
+        for r in semantic_results
+    )
+    has_recency = use_recency_decay and any(
+        isinstance(r.get("payload"), dict) and (r["payload"].get("created_at") or r["payload"].get("updated_at"))
+        for r in semantic_results
+    )
+
+    max_possible = 1.0
+    if has_bm25:
+        max_possible += 1.0
+    if has_entity:
+        max_possible += ENTITY_BOOST_WEIGHT
+    if has_importance:
+        max_possible += IMPORTANCE_BOOST_WEIGHT
+    if has_recency:
+        max_possible += RECENCY_BOOST_WEIGHT
+
     scored: List[Dict[str, Any]] = []
 
     for result in semantic_results:
@@ -140,36 +167,20 @@ def score_and_rank(
         entity_boost = entity_boosts.get(mem_id_str, 0.0)
         payload = result.get("payload") or {}
 
-        # Extract importance rating (1-10 scale mapped to 0.1-1.0)
-        raw_importance = payload.get("importance") if isinstance(payload, dict) else None
-        importance_score = 0.0
-        has_importance = False
-        if raw_importance is not None:
-            try:
-                imp_val = float(raw_importance)
-                importance_score = max(0.1, min(imp_val / 10.0, 1.0))
-                has_importance = True
-            except (ValueError, TypeError):
-                pass
+        importance_score = 0.5
+        if has_importance:
+            raw_importance = payload.get("importance") if isinstance(payload, dict) else None
+            if raw_importance is not None:
+                try:
+                    importance_score = max(0.1, min(float(raw_importance) / 10.0, 1.0))
+                except (ValueError, TypeError):
+                    pass
 
-        # Compute recency decay score from timestamp fields
-        recency_score = 0.0
-        has_recency = False
-        if use_recency_decay and isinstance(payload, dict):
-            ts = payload.get("created_at") or payload.get("updated_at")
+        recency_score = 0.5
+        if has_recency:
+            ts = payload.get("created_at") or payload.get("updated_at") if isinstance(payload, dict) else None
             if ts:
                 recency_score = compute_recency_score(ts, half_life_days=half_life_days)
-                has_recency = recency_score > 0.0
-
-        max_possible = 1.0
-        if has_bm25:
-            max_possible += 1.0
-        if has_entity:
-            max_possible += ENTITY_BOOST_WEIGHT
-        if has_importance:
-            max_possible += IMPORTANCE_BOOST_WEIGHT
-        if has_recency:
-            max_possible += RECENCY_BOOST_WEIGHT
 
         raw_combined = (
             semantic_score

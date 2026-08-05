@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { GitCompare, ShieldAlert, CheckCircle2, ArrowRight } from "lucide-react";
+import { GitCompare, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -13,20 +12,20 @@ import { useApiQuery } from "@/hooks/use-api-query";
 import { Memory } from "@/types/api";
 
 export default function ContradictionsPage() {
-  const [memories, setMemories] = useState<Memory[]>([]);
-
   const { data: rawMemories = [], isLoading, refetch } = useApiQuery<Memory[]>(
     async () => {
-      const res = await api.get(MEMORY_ENDPOINTS.BASE, { params: { top_k: 500 } });
+      // show_superseded=true is required here -- GET /memories excludes
+      // superseded/merged memories by default (same convention as
+      // show_expired), so without it this page could never see the data
+      // it exists to display.
+      const res = await api.get(MEMORY_ENDPOINTS.BASE, { params: { top_k: 500, show_superseded: true } });
       const raw = res.data?.results ?? res.data ?? [];
       return Array.isArray(raw) ? raw : [];
     },
     { errorToast: "Failed to load memories", initialData: [] },
   );
 
-  const supersededMemories = rawMemories.filter(
-    (m: any) => m.status === "superseded" || m.metadata?.status === "superseded"
-  );
+  const supersededMemories = rawMemories.filter((m) => m.metadata?.status === "superseded");
   const activeCount = rawMemories.length - supersededMemories.length;
 
   return (
@@ -38,7 +37,8 @@ export default function ContradictionsPage() {
             Contradictions & Supersede Lifecycle
           </h1>
           <p className="text-sm text-onSurface-default-tertiary mt-1">
-            Mem0 automatically detects contradictory facts (vector similarity ≥ 0.85) within tenant scope and marks older memories as superseded.
+            Mem0 flags candidate contradictions by vector similarity (≥ 0.85), then asks the LLM to
+            confirm before marking the older memory superseded -- similarity alone never hides a memory.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => void refetch()}>
@@ -66,14 +66,14 @@ export default function ContradictionsPage() {
       ) : supersededMemories.length === 0 ? (
         <EmptyState
           title="No Contradictions Detected"
-          description="When new contradictory facts are ingested into Mem0, older vector-similar facts will be automatically linked and archived here."
+          description="When new contradictory facts are ingested into Mem0, older vector-similar facts confirmed as contradictions will be linked and archived here."
         />
       ) : (
         <div className="space-y-4">
           <h2 className="text-sm font-medium text-onSurface-default-tertiary">
             Superseded Memory Lineage Chains ({supersededMemories.length})
           </h2>
-          {supersededMemories.map((mem: any) => (
+          {supersededMemories.map((mem) => (
             <Card key={mem.id} className="p-4 border-memBorder-primary space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -81,34 +81,34 @@ export default function ContradictionsPage() {
                     <ShieldAlert className="size-3 mr-1" />
                     Superseded
                   </Badge>
-                  {mem.category && (
+                  {mem.metadata?.category && (
                     <Badge variant="outline" className="capitalize">
-                      {mem.category}
+                      {mem.metadata.category}
                     </Badge>
                   )}
-                  {mem.importance && (
-                    <Badge variant="outline">
-                      Importance: {mem.importance}/10
-                    </Badge>
+                  {mem.metadata?.importance != null && (
+                    <Badge variant="outline">Importance: {mem.metadata.importance}/10</Badge>
                   )}
                 </div>
-                <span className="text-xs font-mono text-onSurface-default-tertiary">
-                  ID: {mem.id}
-                </span>
+                <span className="text-xs font-mono text-onSurface-default-tertiary">ID: {mem.id}</span>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-surface-default-secondary p-3 rounded-lg text-sm">
                 <div>
-                  <p className="text-xs text-onSurface-default-tertiary font-semibold mb-1">Outdated Fact (Hidden from Search)</p>
-                  <p className="line-through text-onSurface-default-tertiary">{mem.memory || mem.data}</p>
+                  <p className="text-xs text-onSurface-default-tertiary font-semibold mb-1">
+                    Outdated Fact (Hidden from Search)
+                  </p>
+                  <p className="line-through text-onSurface-default-tertiary">{mem.memory}</p>
                 </div>
-                {mem.superseded_by_id && (
+                {mem.metadata?.superseded_by_id && (
                   <div className="border-t md:border-t-0 md:border-l border-memBorder-primary pt-2 md:pt-0 md:pl-4">
                     <p className="text-xs text-emerald-500 font-semibold mb-1 flex items-center gap-1">
                       <CheckCircle2 className="size-3" />
                       Superseded By Memory
                     </p>
-                    <p className="font-mono text-xs text-onSurface-default-primary break-all">{mem.superseded_by_id}</p>
+                    <p className="font-mono text-xs text-onSurface-default-primary break-all">
+                      {mem.metadata.superseded_by_id}
+                    </p>
                   </div>
                 )}
               </div>

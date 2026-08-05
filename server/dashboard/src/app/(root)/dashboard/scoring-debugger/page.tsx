@@ -11,11 +11,29 @@ import { toast } from "@/components/ui/use-toast";
 import { getErrorMessage } from "@/lib/error-message";
 import { api } from "@/utils/api";
 import { MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
+import { Memory } from "@/types/api";
+
+interface ScoreDetails {
+  semantic_score?: number;
+  bm25_score?: number;
+  entity_boost?: number;
+  importance_score?: number;
+  recency_score?: number;
+  raw_score?: number;
+  max_possible_score?: number;
+  final_score?: number;
+  threshold?: number;
+}
+
+interface ScoredMemory extends Memory {
+  score?: number;
+  score_details?: ScoreDetails;
+}
 
 export default function ScoringDebuggerPage() {
   const [query, setQuery] = useState("");
   const [userId, setUserId] = useState("");
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<ScoredMemory[]>([]);
   const [loading, setLoading] = useState(false);
 
   const handleSearch = async () => {
@@ -91,8 +109,8 @@ export default function ScoringDebuggerPage() {
           {results.map((item, idx) => {
             const score = item.score ?? 0.0;
             const details = item.score_details || {};
-            const importance = item.importance || item.metadata?.importance || 5;
-            const category = item.category || item.metadata?.category || "general";
+            const importance = item.metadata?.importance ?? 5;
+            const category = item.metadata?.category ?? "general";
 
             return (
               <Card key={item.id || idx} className="p-4 border-memBorder-primary space-y-3">
@@ -116,14 +134,14 @@ export default function ScoringDebuggerPage() {
                   </span>
                 </div>
 
-                <p className="text-sm font-medium">{item.memory || item.data}</p>
+                <p className="text-sm font-medium">{item.memory}</p>
 
                 {/* Score Breakdown Pills */}
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2 border-t border-memBorder-primary text-xs">
                   <div className="bg-surface-default-secondary p-2 rounded">
                     <span className="text-onSurface-default-tertiary block">Vector Sim (1.0x)</span>
                     <span className="font-mono font-bold text-indigo-400">
-                      {details.vector_sim ? (details.vector_sim * 100).toFixed(1) + "%" : "0.0%"}
+                      {details.semantic_score ? (details.semantic_score * 100).toFixed(1) + "%" : "0.0%"}
                     </span>
                   </div>
                   <div className="bg-surface-default-secondary p-2 rounded">

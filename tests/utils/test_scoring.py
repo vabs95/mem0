@@ -190,3 +190,25 @@ class TestImportanceAndRecencyScoring:
         assert len(scored) == 1
         assert scored[0]["score_details"]["recency_score"] > 0.95
 
+    def test_max_possible_is_consistent_across_candidates_in_one_call(self):
+        """max_possible must be computed once for the whole batch, not
+        per-candidate -- two candidates with identical semantic/bm25/entity
+        signals must get the identical denominator even if only one of them
+        happens to carry an importance field, or their relative ranking
+        would be distorted by incidental payload completeness rather than
+        actual relevance."""
+        from mem0.utils.scoring import score_and_rank
+
+        results = [
+            {"id": "has_importance", "score": 0.8, "payload": {"importance": 8}},
+            {"id": "no_importance", "score": 0.8, "payload": {}},
+        ]
+        scored = score_and_rank(results, {}, {}, threshold=0.1, top_k=10, use_recency_decay=False, explain=True)
+        assert len(scored) == 2
+        max_possibles = {r["id"]: r["score_details"]["max_possible_score"] for r in scored}
+        assert max_possibles["has_importance"] == max_possibles["no_importance"]
+        # The candidate missing importance gets a neutral 0.5, not 0.0 --
+        # it isn't penalized just for lacking the field.
+        no_importance_result = next(r for r in scored if r["id"] == "no_importance")
+        assert no_importance_result["score_details"]["importance_score"] == 0.5
+

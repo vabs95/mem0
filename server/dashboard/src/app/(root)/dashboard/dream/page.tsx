@@ -7,17 +7,28 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "@/components/ui/use-toast";
+import DeleteConfirmationModal from "@/components/ui/delete-confirmation-modal";
 import { api } from "@/utils/api";
 import { MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
+import { isAxiosError } from "axios";
+
+interface DreamResult {
+  processed?: number;
+  clusters_merged?: number;
+  new_memories_created?: number;
+  memories_merged?: number;
+}
 
 export default function DreamPage() {
   const [userId, setUserId] = useState("");
   const [projectId, setProjectId] = useState("");
   const [similarityThreshold, setSimilarityThreshold] = useState("0.90");
   const [running, setRunning] = useState(false);
-  const [lastResult, setLastResult] = useState<any>(null);
+  const [lastResult, setLastResult] = useState<DreamResult | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const handleTriggerDream = async () => {
+    setConfirmOpen(false);
     setRunning(true);
     setLastResult(null);
     try {
@@ -33,10 +44,11 @@ export default function DreamPage() {
         description: `Processed ${res.data?.processed || 0} facts, merged ${res.data?.clusters_merged || 0} clusters into synthesized memories.`,
         variant: "success",
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = isAxiosError(err) ? err.response?.data?.detail || err.message : "Upstream error";
       toast({
         title: "Dream Consolidation Failed",
-        description: err.message || "Upstream error",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -76,11 +88,25 @@ export default function DreamPage() {
           />
         </div>
 
-        <Button onClick={handleTriggerDream} disabled={running} className="gap-2 bg-purple-600 hover:bg-purple-700">
+        <Button
+          onClick={() => setConfirmOpen(true)}
+          disabled={running}
+          className="gap-2 bg-purple-600 hover:bg-purple-700"
+        >
           {running ? <RefreshCw className="size-4 animate-spin" /> : <Play className="size-4" />}
           {running ? "Consolidating Facts..." : "Trigger Dream Consolidation"}
         </Button>
       </Card>
+
+      <DeleteConfirmationModal
+        isOpen={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={handleTriggerDream}
+        title="Run Dream Consolidation"
+        description="This merges near-duplicate active memories within the selected scope into synthesized memories and marks their sources as merged. This cannot be undone from the dashboard."
+        itemName="CONSOLIDATE"
+        confirmButtonText="Run Consolidation"
+      />
 
       {lastResult && (
         <Card className="p-5 border-purple-500/30 bg-purple-500/5 space-y-4">
