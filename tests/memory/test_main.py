@@ -1269,5 +1269,16 @@ class TestMemoryDream:
         assert res["memories_merged"] == 2
         assert memory.add.call_count == 1
 
+    def test_memory_dream_rejects_unscoped_call(self, mocker):
+        """Without a scope, dream() would scan and merge across every
+        tenant's memories -- must fail fast like delete_all() does, not
+        silently run a cross-tenant consolidation."""
+        _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        with pytest.raises(ValueError, match="At least one of"):
+            memory.dream()
+
 
 

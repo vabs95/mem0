@@ -527,6 +527,8 @@ def dream_memories(dream_req: DreamRequest, _auth=Depends(verify_auth)):
             similarity_threshold=dream_req.similarity_threshold or 0.90,
             limit=dream_req.limit or 100,
         )
+    except (ValueError, Mem0ValidationError) as e:
+        raise _client_error(e)
     except Exception:
         raise upstream_error()
 

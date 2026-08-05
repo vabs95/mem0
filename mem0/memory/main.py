@@ -2107,6 +2107,12 @@ class Memory(MemoryBase):
     def dream(self, user_id=None, agent_id=None, run_id=None, project=None, similarity_threshold=0.90, limit=100):
         """Consolidate near-duplicate active memories within tenant scope into synthesized facts."""
         filters = {k: v for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items() if v}
+        if not filters:
+            raise ValueError(
+                "At least one of 'user_id', 'agent_id', 'run_id', or 'project' is required to run "
+                "dream consolidation -- without a scope this would scan and merge memories across "
+                "every tenant."
+            )
         if any(k in filters for k in ("user_id", "agent_id", "run_id")):
             memories = self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id, project=project, limit=limit)
             raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
@@ -3964,6 +3970,12 @@ class AsyncMemory(MemoryBase):
     async def dream(self, user_id=None, agent_id=None, run_id=None, project=None, similarity_threshold=0.90, limit=100):
         """Consolidate near-duplicate active memories within tenant scope into synthesized facts asynchronously."""
         filters = {k: v for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items() if v}
+        if not filters:
+            raise ValueError(
+                "At least one of 'user_id', 'agent_id', 'run_id', or 'project' is required to run "
+                "dream consolidation -- without a scope this would scan and merge memories across "
+                "every tenant."
+            )
         if any(k in filters for k in ("user_id", "agent_id", "run_id")):
             memories = await self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id, project=project, limit=limit)
             raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
