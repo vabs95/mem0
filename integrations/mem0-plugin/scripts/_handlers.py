@@ -27,6 +27,12 @@ import glob
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
+# For spawn_bg() calls whose silent failure would be hard to notice
+# (auto-import, one-shot setup) — unlike the MEM0_DEBUG-gated hooks.log
+# above, this is always written regardless of MEM0_DEBUG, since it's not
+# request/response tracing, just "did this background task blow up."
+BACKGROUND_LOG_FILE = os.path.expanduser("~/.mem0/background.log")
+
 from _api import list_memories  # noqa: E402
 from _identity import resolve_api_key, resolve_user_id  # noqa: E402
 from _platform import spawn_bg  # noqa: E402
@@ -308,8 +314,8 @@ After completing any task, decision, or meaningful exchange, proactively store l
             except Exception:
                 pass
 
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_import.py")])
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_setup_categories.py")])
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_import.py")], log_path=BACKGROUND_LOG_FILE)
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_setup_categories.py")], log_path=BACKGROUND_LOG_FILE)
 
     elif source == "resume":
         print("Session resumed. Search mem0 for session_state and decision memories to pick up where you left off. Run 2 parallel searches.")
@@ -504,7 +510,7 @@ if results:
 
     transcript_path = input_data.get("transcript_path") or ""
     if os.environ.get("MEM0_AUTO_SAVE", "true") != "false" and (msg_count % 3) == 0 and msg_count > 0 and transcript_path:
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_capture.py"), transcript_path])
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_capture.py"), transcript_path], log_path=BACKGROUND_LOG_FILE)
 
     adds = 0
     stats_file = os.path.join(tempfile.gettempdir(), f"mem0_session_stats_{user}.json")
@@ -559,13 +565,14 @@ def cmd_stop(input_data: dict) -> None:
         sys.exit(0)
 
     try:
-        p = subprocess.Popen(
-            [sys.executable, os.path.join(SCRIPT_DIR, "capture_session_summary.py")],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        p.communicate(input=json.dumps(input_data).encode('utf-8'))
+        with open(BACKGROUND_LOG_FILE, "a") as _log_file:
+            p = subprocess.Popen(
+                [sys.executable, os.path.join(SCRIPT_DIR, "capture_session_summary.py")],
+                stdin=subprocess.PIPE,
+                stdout=_log_file,
+                stderr=_log_file,
+            )
+            p.communicate(input=json.dumps(input_data).encode('utf-8'))
     except Exception:
         pass
 

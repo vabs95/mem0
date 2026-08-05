@@ -11,11 +11,16 @@ Self-healing instead happens on the client side — every hook invocation
 that can't reach the daemon just spawns a new one (see
 ``_handlers.py``'s ``_dispatch_via_daemon``) — and the daemon shuts itself
 down after a period of inactivity so nothing lingers across a sleep/wake
-cycle or an editor restart.
+cycle or an editor restart. It also self-recycles when its own source
+files change on disk (see _CODE_FINGERPRINT / _watchdog below), so a
+plugin update never requires anyone to manually find and kill a stale
+daemon process — the same self-healing spawn-on-demand path picks it back
+up on the next hook call, with current code, automatically.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -37,6 +42,34 @@ LOG_FILE = os.path.join(STATE_DIR, "daemon.log")
 
 IDLE_SHUTDOWN_SECONDS = 30 * 60
 CACHE_TTL_SECONDS = 45
+CODE_CHECK_INTERVAL_SECONDS = 60
+
+
+def _compute_code_fingerprint() -> str:
+    """Hash (mtime, size) of every .py file in SCRIPT_DIR.
+
+    Cheap (stat, not read) and good enough: any edit, plugin-cache
+    refresh, or git checkout that changes these files changes at least
+    one mtime or size. Not recursive — SCRIPT_DIR is flat, that's where
+    daemon.py, _handlers.py, and every cmd_* handler module live.
+    """
+    digest = hashlib.sha256()
+    try:
+        for name in sorted(os.listdir(SCRIPT_DIR)):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(SCRIPT_DIR, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            digest.update(f"{name}:{st.st_mtime_ns}:{st.st_size}\n".encode())
+    except OSError:
+        pass
+    return digest.hexdigest()
+
+
+_CODE_FINGERPRINT = _compute_code_fingerprint()
 
 # Identity env vars the daemon resolves on behalf of callers. The daemon is a
 # long-lived process, so its own os.environ is frozen at whatever it looked
@@ -296,7 +329,15 @@ class _Handler(BaseHTTPRequestHandler):
         global _last_request_at
         _last_request_at = time.time()
         if self.path == "/health":
-            self._json_response(200, {"pid": os.getpid(), "started_at": _STARTED_AT})
+            self._json_response(
+                200,
+                {
+                    "pid": os.getpid(),
+                    "started_at": _STARTED_AT,
+                    "code_fingerprint": _CODE_FINGERPRINT,
+                    "code_current": _compute_code_fingerprint() == _CODE_FINGERPRINT,
+                },
+            )
         else:
             self._json_response(404, {"error": "not_found"})
 
@@ -327,14 +368,32 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def _idle_watchdog(server: ThreadingHTTPServer) -> None:
+def _watchdog(server: ThreadingHTTPServer) -> None:
+    """Shut the daemon down when it's either idle too long or stale.
+
+    "Stale" means the .py files it loaded at startup no longer match
+    what's on disk — a plugin update, `codex plugin add` cache refresh,
+    or `git checkout` all change at least one mtime. Rather than require
+    anyone to notice and manually kill the old process, the daemon
+    checks its own fingerprint every poll and retires itself once it no
+    longer matches; the client's existing self-healing spawn-on-demand
+    path (_dispatch_via_daemon in _handlers.py: any hook call that finds
+    no daemon listening spawns a fresh one) brings up a new one with
+    current code on the very next hook invocation, so there's at most
+    one cold dispatch's worth of latency and zero manual intervention.
+    Same graceful-shutdown path as the pre-existing idle timeout.
+    """
     while True:
-        time.sleep(60)
-        if time.time() - _last_request_at > IDLE_SHUTDOWN_SECONDS:
+        time.sleep(CODE_CHECK_INTERVAL_SECONDS)
+        if _compute_code_fingerprint() != _CODE_FINGERPRINT:
+            _log("source changed on disk, recycling for fresh code")
+        elif time.time() - _last_request_at > IDLE_SHUTDOWN_SECONDS:
             _log("idle timeout reached, shutting down")
-            _cleanup_state_files()
-            threading.Thread(target=server.shutdown, daemon=True).start()
-            return
+        else:
+            continue
+        _cleanup_state_files()
+        threading.Thread(target=server.shutdown, daemon=True).start()
+        return
 
 
 def _cleanup_state_files() -> None:
@@ -362,7 +421,7 @@ def main() -> None:
 
     _log(f"daemon started pid={os.getpid()} port={port} windows={IS_WINDOWS}")
 
-    watchdog = threading.Thread(target=_idle_watchdog, args=(server,), daemon=True)
+    watchdog = threading.Thread(target=_watchdog, args=(server,), daemon=True)
     watchdog.start()
 
     try:

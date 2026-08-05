@@ -22,13 +22,32 @@ _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
-def spawn_bg(args: list[str]) -> None:
-    """Launch ``args`` as a detached, fire-and-forget background process."""
+def spawn_bg(args: list[str], log_path: str | None = None) -> None:
+    """Launch ``args`` as a detached, fire-and-forget background process.
+
+    ``log_path``, when given, appends the child's stdout+stderr there
+    instead of discarding them — pass it for anything whose silent
+    failure would be hard to notice (auto-import, one-shot setup
+    scripts). Omit it (the default) for high-frequency, low-value
+    background pings (telemetry, session stats) where a log entry per
+    call would just be noise. Either way this call itself never raises;
+    a background task's own failure is still that task's problem, not
+    the caller's.
+    """
     try:
-        if IS_WINDOWS:
-            subprocess.Popen(args, creationflags=_CREATE_NO_WINDOW, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout = stderr = subprocess.DEVNULL
+        _log_file = None
+        if log_path is not None:
+            _log_file = open(log_path, "a")
+            stdout = stderr = _log_file
+        try:
+            if IS_WINDOWS:
+                subprocess.Popen(args, creationflags=_CREATE_NO_WINDOW, stdout=stdout, stderr=stderr)
+            else:
+                subprocess.Popen(args, stdout=stdout, stderr=stderr)
+        finally:
+            if _log_file is not None:
+                _log_file.close()
     except Exception:
         pass
 
