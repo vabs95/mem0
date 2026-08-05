@@ -496,7 +496,7 @@ if results:
         ctx_parts.append("Remember intent detected. The /mem0:remember skill auto-classifies, sets confidence=1.0, and stores verbatim.")
 
     if not rubric_already_shown:
-        ctx_parts.append("Mem0 searches apply when user references past work, decision questions, errors, or non-trivial tasks. Queries use noun-phrases, 2-4 parallel calls with different metadata.type filters, and include user_id + app_id. For multi-part or comparative questions, run follow-up searches and combine results before answering -- one search is rarely enough.")
+        ctx_parts.append("Mem0 searches apply when user references past work, decision questions, errors, or non-trivial tasks. Queries use noun-phrases, 2-4 parallel calls with different `type` filters (flat key, e.g. filters={\"type\": \"decision\"} -- NOT nested as {\"metadata\": {\"type\": ...}}, which the self-hosted backend rejects with a 400), and include user_id + app_id. For multi-part or comparative questions, run follow-up searches and combine results before answering -- one search is rarely enough.")
         try:
             with open(rubric_flag, "w") as f:
                 f.write("injected")
