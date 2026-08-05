@@ -178,43 +178,67 @@ def _extract_added_memory_ids(tool_response) -> list[str]:
     return [r["id"] for r in results if isinstance(r, dict) and r.get("id") and r.get("event") != "NONE"]
 
 
-def _post_timeline_event(hook_name: str, input_data: dict) -> None:
-    """Best-effort, fire-and-forget write to the server-side timeline.
+def _build_timeline_body(hook_name: str, input_data: dict) -> dict | None:
+    """Synchronously resolve everything env/cache-dependent for a timeline
+    event. Must be called while still holding _dispatch_lock, i.e. before
+    any other request's _apply_request_env can run.
 
-    Never allowed to affect the hook's own stdout/exit code — any failure
-    here is swallowed and logged, nothing more.
+    This daemon is a single process shared by every editor on the machine
+    (Claude Code, Codex, ...) — os.environ and the cached identity
+    resolvers are process-global, mutable state. Reading them from a
+    detached background thread *after* the lock is released is racy: a
+    concurrent request from a different platform can overwrite
+    MEM0_PLATFORM/MEM0_USER_ID/etc. in the window between this request's
+    dispatch and a background thread getting scheduled to read them,
+    misattributing the event (e.g. a Codex hook's event logged with
+    source_agent "claude-code" because a Claude Code hook fired around the
+    same time and its request didn't carry MEM0_PLATFORM). Resolving
+    everything here, synchronously, while the lock is held, and handing
+    the background thread a plain dict with no further env reads closes
+    that window. Returns None when there's no API key (nothing to post).
     """
+    api_key = _handlers.resolve_api_key()
+    if not api_key:
+        return None
+
+    category = None
+    memory_ids: list[str] = []
+    event_type = hook_name
+    # An add_memory tool call arrives here as a generic post_tool_use
+    # hook — reclassify it to its own event_type and attach the
+    # provenance link (which memories this event produced) and the
+    # caller's own metadata.type classification (decision/bug_fix/...,
+    # set in _handlers.py's cmd_enforce_metadata), claude-mem-style.
+    if hook_name == "post_tool_use" and (input_data.get("tool_name") or "").endswith("__add_memory"):
+        event_type = "add_memory"
+        memory_ids = _extract_added_memory_ids(input_data.get("tool_response"))
+        category = (input_data.get("tool_input") or {}).get("metadata", {}).get("type")
+
+    cwd = input_data.get("cwd")
+    return {
+        "event_type": event_type,
+        "source_agent": os.environ.get("MEM0_PLATFORM", "claude-code"),
+        "user_id": _handlers.resolve_user_id(),
+        "project": _handlers.resolve_project_id(cwd),
+        "summary": _summarize_event(event_type, input_data),
+        "category": category,
+        "memory_ids": memory_ids,
+        "_api_key": api_key,
+    }
+
+
+def _send_timeline_event(body: dict) -> None:
+    """Best-effort, fire-and-forget POST of an already-resolved timeline
+    event body — pure network I/O, no env/cache reads, so it's safe to run
+    from a detached background thread regardless of what other requests do
+    to the daemon's process-global identity state in the meantime. Never
+    allowed to affect the hook's own stdout/exit code; any failure here is
+    swallowed and logged, nothing more."""
     try:
         from _api import api_base_url, auth_headers
         import urllib.request
 
-        api_key = _handlers.resolve_api_key()
-        if not api_key:
-            return
-
-        category = None
-        memory_ids: list[str] = []
-        event_type = hook_name
-        # An add_memory tool call arrives here as a generic post_tool_use
-        # hook — reclassify it to its own event_type and attach the
-        # provenance link (which memories this event produced) and the
-        # caller's own metadata.type classification (decision/bug_fix/...,
-        # set in _handlers.py's cmd_enforce_metadata), claude-mem-style.
-        if hook_name == "post_tool_use" and (input_data.get("tool_name") or "").endswith("__add_memory"):
-            event_type = "add_memory"
-            memory_ids = _extract_added_memory_ids(input_data.get("tool_response"))
-            category = (input_data.get("tool_input") or {}).get("metadata", {}).get("type")
-
-        cwd = input_data.get("cwd")
-        body = {
-            "event_type": event_type,
-            "source_agent": os.environ.get("MEM0_PLATFORM", "claude-code"),
-            "user_id": _handlers.resolve_user_id(),
-            "project": _handlers.resolve_project_id(cwd),
-            "summary": _summarize_event(event_type, input_data),
-            "category": category,
-            "memory_ids": memory_ids,
-        }
+        api_key = body.pop("_api_key")
         data = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json", **auth_headers(api_key)}
         req = urllib.request.Request(f"{api_base_url()}/timeline/events", data=data, headers=headers, method="POST")
@@ -223,15 +247,25 @@ def _post_timeline_event(hook_name: str, input_data: dict) -> None:
         _log(f"timeline write failed: {exc}")
 
 
-def _run_captured(hook_name: str, input_data: dict) -> tuple[str, int]:
-    """Run a hook handler in-process, capturing its stdout/exit code.
+def _run_captured(hook_name: str, input_data: dict, env_overrides: dict) -> tuple[str, int]:
+    """Apply this request's identity env, run its hook handler, and build
+    its timeline-event body, all atomically under _dispatch_lock.
 
     Serialized behind _dispatch_lock: the handlers do local file I/O on
     shared per-user state (session stats, message counters) that was
     never written to expect concurrent callers, and hook events aren't
-    high-frequency enough for serializing them to matter.
+    high-frequency enough for serializing them to matter. Applying the
+    per-request identity env override and building the timeline body in
+    the same locked region (rather than the previous per-call lock plus a
+    separately-scheduled background read) is what actually closes the
+    cross-platform misattribution race — see _build_timeline_body's
+    docstring.
     """
     with _dispatch_lock:
+        env_changed = _apply_request_env(env_overrides)
+        if hook_name == "session_start" or env_changed:
+            _invalidate_cache()
+
         buf = io.StringIO()
         old_stdout = sys.stdout
         sys.stdout = buf
@@ -247,7 +281,10 @@ def _run_captured(hook_name: str, input_data: dict) -> tuple[str, int]:
             sys.stdout = old_stdout
         stdout = buf.getvalue()
 
-    threading.Thread(target=_post_timeline_event, args=(hook_name, input_data), daemon=True).start()
+        timeline_body = _build_timeline_body(hook_name, input_data)
+
+    if timeline_body is not None:
+        threading.Thread(target=_send_timeline_event, args=(timeline_body,), daemon=True).start()
     return stdout, exit_code
 
 
@@ -277,12 +314,8 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             input_data = {}
 
-        env_overrides = input_data.pop("_env", None)
-        env_changed = _apply_request_env(env_overrides or {})
-        if hook_name == "session_start" or env_changed:
-            _invalidate_cache()
-
-        stdout, exit_code = _run_captured(hook_name, input_data)
+        env_overrides = input_data.pop("_env", None) or {}
+        stdout, exit_code = _run_captured(hook_name, input_data, env_overrides)
         self._json_response(200, {"stdout": stdout, "exit_code": exit_code})
 
     def _json_response(self, status: int, body: dict) -> None:
