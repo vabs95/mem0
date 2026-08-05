@@ -22,7 +22,7 @@ _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
-def spawn_bg(args: list[str], log_path: str | None = None) -> None:
+def spawn_bg(args: list[str], log_path: str | None = None, cwd: str | None = None) -> None:
     """Launch ``args`` as a detached, fire-and-forget background process.
 
     ``log_path``, when given, appends the child's stdout+stderr there
@@ -33,6 +33,18 @@ def spawn_bg(args: list[str], log_path: str | None = None) -> None:
     call would just be noise. Either way this call itself never raises;
     a background task's own failure is still that task's problem, not
     the caller's.
+
+    ``cwd``, when given, sets the child's actual working directory. This
+    matters a lot when the caller is the daemon (see daemon.py): every
+    spawn_bg call made from inside a hook handler runs in the daemon's
+    own process, so *without* an explicit cwd the child inherits the
+    daemon's cwd — frozen at whatever directory happened to spawn the
+    daemon in the first place, not the current hook invocation's actual
+    working directory. A script that resolves its project id from
+    os.getcwd() (directly, or via resolve_project_id(cwd=None)) would
+    then silently resolve against the wrong project. Always pass the
+    hook's own cwd (input_data.get("cwd")) here for anything
+    project-scoped.
     """
     try:
         stdout = stderr = subprocess.DEVNULL
@@ -42,9 +54,9 @@ def spawn_bg(args: list[str], log_path: str | None = None) -> None:
             stdout = stderr = _log_file
         try:
             if IS_WINDOWS:
-                subprocess.Popen(args, creationflags=_CREATE_NO_WINDOW, stdout=stdout, stderr=stderr)
+                subprocess.Popen(args, creationflags=_CREATE_NO_WINDOW, stdout=stdout, stderr=stderr, cwd=cwd)
             else:
-                subprocess.Popen(args, stdout=stdout, stderr=stderr)
+                subprocess.Popen(args, stdout=stdout, stderr=stderr, cwd=cwd)
         finally:
             if _log_file is not None:
                 _log_file.close()
@@ -60,9 +72,20 @@ def spawn_daemon_detached(args: list[str], log_path: str) -> None:
     Windows, plain ``detached`` doesn't fully daemonize (see claude-mem's
     ProcessManager.spawnDaemon, which hit the same limitation), so we add
     DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP creation flags instead.
+
+    Explicitly pins cwd to the directory containing ``args[-1]`` (the
+    script being launched — daemon.py) rather than leaving it to inherit
+    whatever directory the *first* hook invocation that happened to spawn
+    the daemon was running in. The daemon is a shared, long-lived process
+    across every project a caller might be in; anything downstream that
+    falls back to the daemon's own os.getcwd() (a bare
+    resolve_project_id() with no cwd passed, for instance) should get a
+    stable, predictable value — not whichever project's session happened
+    to spawn the daemon first.
     """
     try:
         with open(log_path, "a") as log:
+            daemon_dir = os.path.dirname(os.path.abspath(args[-1])) if args else None
             if IS_WINDOWS:
                 subprocess.Popen(
                     args,
@@ -70,6 +93,7 @@ def spawn_daemon_detached(args: list[str], log_path: str) -> None:
                     stdout=log,
                     stderr=log,
                     stdin=subprocess.DEVNULL,
+                    cwd=daemon_dir,
                 )
             else:
                 subprocess.Popen(
@@ -78,6 +102,7 @@ def spawn_daemon_detached(args: list[str], log_path: str) -> None:
                     stdout=log,
                     stderr=log,
                     stdin=subprocess.DEVNULL,
+                    cwd=daemon_dir,
                 )
     except Exception:
         pass

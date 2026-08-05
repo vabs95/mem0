@@ -314,8 +314,8 @@ After completing any task, decision, or meaningful exchange, proactively store l
             except Exception:
                 pass
 
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_import.py")], log_path=BACKGROUND_LOG_FILE)
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_setup_categories.py")], log_path=BACKGROUND_LOG_FILE)
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_import.py")], log_path=BACKGROUND_LOG_FILE, cwd=cwd)
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_setup_categories.py")], log_path=BACKGROUND_LOG_FILE, cwd=cwd)
 
     elif source == "resume":
         print("Session resumed. Search mem0 for session_state and decision memories to pick up where you left off. Run 2 parallel searches.")
@@ -510,7 +510,7 @@ if results:
 
     transcript_path = input_data.get("transcript_path") or ""
     if os.environ.get("MEM0_AUTO_SAVE", "true") != "false" and (msg_count % 3) == 0 and msg_count > 0 and transcript_path:
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_capture.py"), transcript_path], log_path=BACKGROUND_LOG_FILE)
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_capture.py"), transcript_path], log_path=BACKGROUND_LOG_FILE, cwd=cwd)
 
     adds = 0
     stats_file = os.path.join(tempfile.gettempdir(), f"mem0_session_stats_{user}.json")
