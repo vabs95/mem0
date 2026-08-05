@@ -56,3 +56,19 @@ def test_build_filters_with_extra():
     assert filters["user_id"] == "demo-user"
     assert filters["project"] == "demo-project"
     assert filters["metadata"] == {"type": "decision"}
+
+
+def test_build_filters_translates_app_id_inside_extra():
+    """Agents commonly repeat app_id inside their own filters argument in
+    addition to the top-level app_id param. Self-hosted memories store this
+    concept as "project", not "app_id" -- an unrecognized "app_id" key
+    reaching the backend doesn't error, it just matches nothing and zeroes
+    out the whole query."""
+    filters = build_filters(
+        user_id="demo-user",
+        project="demo-project",
+        extra={"user_id": "demo-user", "app_id": "demo-project", "type": "decision"},
+    )
+
+    assert filters == {"user_id": "demo-user", "project": "demo-project", "type": "decision"}
+    assert "app_id" not in filters

@@ -76,6 +76,15 @@ def build_filters(
     The optional ``project`` key is also placed at the top level so
     the vector store can filter on it as a metadata field.
     Any ``extra`` filters are merged in as well.
+
+    ``extra`` commonly comes straight from the calling agent's own
+    ``filters`` tool argument, which may redundantly repeat ``app_id``
+    (mem0's hosted-API field name for this same concept -- see
+    ``_effective_project`` for the same alias on the top-level param).
+    Self-hosted memories store this as ``project``, not ``app_id``, on
+    every payload -- an unrecognized ``app_id`` key in the filters dict
+    doesn't error, it just matches nothing, silently zeroing out the
+    entire AND-matched query even when every other filter is correct.
     """
     filters: dict[str, Any] = {}
     if user_id:
@@ -87,5 +96,8 @@ def build_filters(
     if project:
         filters["project"] = project
     if extra:
+        extra = dict(extra)
+        if "app_id" in extra:
+            extra.setdefault("project", extra.pop("app_id"))
         filters.update(extra)
     return filters
