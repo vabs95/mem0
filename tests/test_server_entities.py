@@ -15,6 +15,7 @@ Postgres-specific features.
 
 import importlib
 import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -22,10 +23,19 @@ import pytest
 
 pytest.importorskip("fastapi", reason="fastapi not installed")
 
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+# server/ itself must be importable (main.py does `from auth import ...`,
+# `from models import ...` etc, not `from server.auth import ...`), mirroring
+# how it runs in Docker -- same trick as test_api_keys_router.py. Makes this
+# file runnable standalone instead of depending on another test file having
+# already done this during the same pytest session.
+_SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "server")
+if _SERVER_DIR not in sys.path:
+    sys.path.insert(0, _SERVER_DIR)
 
 
 @pytest.fixture

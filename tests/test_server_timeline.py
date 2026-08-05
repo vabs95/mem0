@@ -7,16 +7,26 @@ Postgres-specific features, so SQLite is a faithful enough stand-in for tests.
 
 import importlib
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 pytest.importorskip("fastapi", reason="fastapi not installed")
 
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+# server/ itself must be importable (main.py does `from auth import ...`,
+# `from models import ...` etc, not `from server.auth import ...`), mirroring
+# how it runs in Docker -- same trick as test_api_keys_router.py. Makes this
+# file runnable standalone instead of depending on another test file having
+# already done this during the same pytest session.
+_SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "server")
+if _SERVER_DIR not in sys.path:
+    sys.path.insert(0, _SERVER_DIR)
 
 
 @pytest.fixture
@@ -45,6 +55,37 @@ def client(_mock_memory):
     # StaticPool: plain sqlite:///:memory: hands each pooled connection its
     # own blank in-memory database — StaticPool pins the whole test to one
     # shared connection so create_all()'s tables are actually visible later.
+    test_engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    TestSessionLocal = sessionmaker(bind=test_engine, autoflush=False, expire_on_commit=False)
+    server_db.Base.metadata.create_all(bind=test_engine)
+
+    def _override_get_db():
+        db = TestSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    server_main.app.dependency_overrides[server_db.get_db] = _override_get_db
+    yield TestClient(server_main.app)
+    server_main.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_auth_enabled(_mock_memory):
+    """Same as `client`, but with AUTH_DISABLED unset -- for asserting that
+    /timeline/events actually enforces verify_auth rather than only ever
+    being exercised through the AUTH_DISABLED=true fixture."""
+    with patch.dict(os.environ, {"ADMIN_API_KEY": "", "AUTH_DISABLED": "", "JWT_SECRET": "test-secret"}):
+        import auth as server_auth
+        import db as server_db
+        import server.main as server_main
+
+        importlib.reload(server_auth)
+        importlib.reload(server_main)
+
     test_engine = create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -168,3 +209,22 @@ def test_get_events_for_memory_backlink(client):
     resp = client.get("/timeline/events/for-memory/mem-nonexistent")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_list_events_with_no_filters_returns_everything(client):
+    client.post("/timeline/events", json={"event_type": "stop", "source_agent": "codex", "project": "proj-a"})
+    client.post("/timeline/events", json={"event_type": "stop", "source_agent": "claude-code", "user_id": "u1"})
+
+    resp = client.get("/timeline/events")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 2
+
+
+def test_events_require_auth_when_auth_is_enabled(client_auth_enabled):
+    resp = client_auth_enabled.post(
+        "/timeline/events", json={"event_type": "stop", "source_agent": "codex"}
+    )
+    assert resp.status_code == 401
+
+    resp = client_auth_enabled.get("/timeline/events")
+    assert resp.status_code == 401

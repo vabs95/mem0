@@ -372,7 +372,11 @@ def cmd_user_prompt(input_data: dict) -> None:
         session_id = f"default_{user}"
 
     rubric_dir = os.environ.get("MEM0_RUBRIC_DIR") or tempfile.gettempdir()
-    rubric_flag = os.path.join(rubric_dir, f"mem0_rubric_{session_id}")
+    # session_id comes from hook stdin JSON -- sanitize before using it in a
+    # filesystem path in case a future caller ever feeds it something other
+    # than the harness's own session id.
+    safe_session_id = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
+    rubric_flag = os.path.join(rubric_dir, f"mem0_rubric_{safe_session_id}")
     rubric_already_shown = os.path.isfile(rubric_flag)
 
     msg_count_file = os.path.join(tempfile.gettempdir(), f"mem0_msg_count_{user}")

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import urllib.error
 from datetime import date, timedelta
@@ -165,7 +166,11 @@ def main():
         return
 
     marker_dir = os.path.expanduser("~/.mem0")
-    marker_file = os.path.join(marker_dir, f"compact_captured_{session_id}")
+    # session_id comes from hook stdin JSON -- sanitize before using it in a
+    # filesystem path in case a future caller ever feeds it something other
+    # than the harness's own UUID.
+    safe_session_id = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
+    marker_file = os.path.join(marker_dir, f"compact_captured_{safe_session_id}")
     if session_id and os.path.isfile(marker_file):
         log.info("Compact summary already captured for session %s — skipping", session_id)
         return
