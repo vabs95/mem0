@@ -96,6 +96,32 @@ class TimelineEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class MemoryExport(Base):
+    """A completed (synchronous, v1) memory export job.
+
+    `status`/`payload` are split out so a future async export path (large
+    exports run in a background worker) is a non-breaking addition rather
+    than a schema change -- v1 always writes status="completed" immediately.
+    """
+
+    __tablename__ = "memory_exports"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    format: Mapped[str] = mapped_column(String(16))
+    filters: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="completed")
+    record_count: Mapped[int] = mapped_column(Integer, default=0)
+    payload: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False, default=list
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Settings(Base):
     __tablename__ = "settings"
 

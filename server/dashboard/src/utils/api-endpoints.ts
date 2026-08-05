@@ -38,3 +38,10 @@ export const TIMELINE_ENDPOINTS = {
   FOR_MEMORY: (memoryId: string) =>
     `/timeline/events/for-memory/${encodeURIComponent(memoryId)}`,
 } as const;
+
+export const EXPORT_ENDPOINTS = {
+  BASE: "/export",
+  CREATE: "/export/memories",
+  DOWNLOAD: (exportId: string) => `/export/${exportId}/download`,
+  BY_ID: (exportId: string) => `/export/${exportId}`,
+} as const;

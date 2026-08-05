@@ -20,39 +20,89 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { UpgradeBanner } from "@/components/self-hosted/upgrade-banner";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import { getErrorMessage } from "@/lib/error-message";
 import { api } from "@/utils/api";
-import { MEMORY_ENDPOINTS, TIMELINE_ENDPOINTS } from "@/utils/api-endpoints";
+import { ENTITY_ENDPOINTS, MEMORY_ENDPOINTS, TIMELINE_ENDPOINTS } from "@/utils/api-endpoints";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { Memory, TimelineEvent } from "@/types/api";
+import { Entity, Memory, TimelineEvent } from "@/types/api";
+import { subDays } from "date-fns";
 
 const PAGE_SIZE = 20;
 // Keep in sync with ALL_MEMORIES_LIMIT in server/main.py.
 const MEMORY_FETCH_LIMIT = 1000;
+const ALL_VALUES = "__all__";
+
+const DATE_RANGES = {
+  all: { label: "All time", days: null },
+  "1": { label: "Last 24 hours", days: 1 },
+  "7": { label: "Last 7 days", days: 7 },
+  "30": { label: "Last 30 days", days: 30 },
+} as const;
+type DateRangeKey = keyof typeof DATE_RANGES;
 
 export default function MemoriesPage() {
   const [userId, setUserId] = useState("");
+  const [agentId, setAgentId] = useState(ALL_VALUES);
+  const [runId, setRunId] = useState(ALL_VALUES);
+  const [project, setProject] = useState(ALL_VALUES);
+  const [dateRange, setDateRange] = useState<DateRangeKey>("all");
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
   const [page, setPage] = useState(0);
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
 
+  const { data: entities = [] } = useApiQuery<Entity[]>(
+    async () => {
+      const res = await api.get<Entity[]>(ENTITY_ENDPOINTS.BASE);
+      return res.data ?? [];
+    },
+    { errorToast: "Failed to load entities", initialData: [] },
+  );
+  const byType = (type: Entity["type"]) =>
+    entities.filter((e) => e.type === type).map((e) => e.id).sort();
+
   const {
-    data: memories = [],
+    data: rawMemories = [],
     isLoading,
     refetch,
   } = useApiQuery<Memory[]>(
     async () => {
-      const params = userId.trim()
-        ? { user_id: userId.trim(), top_k: MEMORY_FETCH_LIMIT }
-        : { top_k: MEMORY_FETCH_LIMIT };
+      const params = {
+        user_id: userId.trim() || undefined,
+        agent_id: agentId === ALL_VALUES ? undefined : agentId,
+        run_id: runId === ALL_VALUES ? undefined : runId,
+        project: project === ALL_VALUES ? undefined : project,
+        top_k: MEMORY_FETCH_LIMIT,
+      };
       const res = await api.get(MEMORY_ENDPOINTS.BASE, { params });
       const raw = res.data?.results ?? res.data ?? [];
       return Array.isArray(raw) ? raw : [];
     },
     { errorToast: "Failed to load memories", initialData: [] },
   );
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setPage(0);
+    void refetch();
+  }, [agentId, runId, project]);
+
+  const memories =
+    dateRange === "all"
+      ? rawMemories
+      : rawMemories.filter((m) => {
+          if (!m.created_at) return false;
+          const range = DATE_RANGES[dateRange];
+          return range.days ? new Date(m.created_at) >= subDays(new Date(), range.days) : true;
+        });
 
   const {
     data: sourceEvents = [],
@@ -130,7 +180,7 @@ export default function MemoriesPage() {
         />
       )}
 
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-2">
         <Input
           placeholder="Filter by User ID (optional)"
           value={userId}
@@ -141,8 +191,59 @@ export default function MemoriesPage() {
               refetch();
             }
           }}
-          className="w-64"
+          className="w-56"
         />
+        <Select value={project} onValueChange={setProject}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All projects" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUES}>All projects</SelectItem>
+            {byType("project").map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={agentId} onValueChange={setAgentId}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All agents" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUES}>All agents</SelectItem>
+            {byType("agent").map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={runId} onValueChange={setRunId}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All runs" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUES}>All runs</SelectItem>
+            {byType("run").map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRangeKey)}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(DATE_RANGES) as DateRangeKey[]).map((key) => (
+              <SelectItem key={key} value={key}>
+                {DATE_RANGES[key].label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {isLoading ? (

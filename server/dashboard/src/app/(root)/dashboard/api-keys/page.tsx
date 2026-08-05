@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,7 @@ import { api } from "@/utils/api";
 import { API_KEY_ENDPOINTS } from "@/utils/api-endpoints";
 import { toast } from "@/components/ui/use-toast";
 import { UpgradeBanner } from "@/components/self-hosted/upgrade-banner";
-import { Plus, Copy, Check, Trash2 } from "lucide-react";
+import { Plus, Copy, Check, Trash2, Search } from "lucide-react";
 import { CopyToClipboard } from "react-copy-to-clipboard";
 import { format } from "date-fns";
 import { getErrorMessage } from "@/lib/error-message";
@@ -33,6 +33,7 @@ export default function ApiKeysPage() {
   const [newKey, setNewKey] = useState("");
   const [copied, setCopied] = useState(false);
   const [keyToRevoke, setKeyToRevoke] = useState<ApiKey | null>(null);
+  const [search, setSearch] = useState("");
 
   const {
     data: keys = [],
@@ -45,6 +46,12 @@ export default function ApiKeysPage() {
     },
     { errorToast: "Failed to load API keys", initialData: [] },
   );
+
+  const filteredKeys = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return keys;
+    return keys.filter((k) => k.label.toLowerCase().includes(query));
+  }, [keys, search]);
 
   const handleCreate = async () => {
     try {
@@ -203,6 +210,18 @@ export default function ApiKeysPage() {
         </Dialog>
       </div>
 
+      {keys.length > 0 && (
+        <div className="relative max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-onSurface-default-tertiary" />
+          <Input
+            placeholder="Search by label..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-8"
+          />
+        </div>
+      )}
+
       {keys.length >= 3 && (
         <UpgradeBanner
           id="api-keys-3"
@@ -220,10 +239,12 @@ export default function ApiKeysPage() {
           title="No API keys yet"
           description="Create your first API key to start using the Mem0 API."
         />
+      ) : filteredKeys.length === 0 ? (
+        <EmptyState title="No matching keys" description="No API keys match your search." />
       ) : (
         <Card className="border-memBorder-primary overflow-hidden">
           <DataTable
-            data={keys}
+            data={filteredKeys}
             columns={columns}
             getRowKey={(row) => row.id}
           />

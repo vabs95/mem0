@@ -43,6 +43,16 @@ export interface Entity {
   updated_at: string | null;
 }
 
+export interface MemoryExport {
+  id: string;
+  format: "json" | "csv";
+  filters: Record<string, string>;
+  status: string;
+  record_count: number;
+  created_at: string;
+  completed_at?: string | null;
+}
+
 export interface TimelineEvent {
   id: string;
   event_type: string;

@@ -1,18 +1,35 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { EmptyState } from "@/components/self-hosted/empty-state";
+import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
 import { REQUEST_ENDPOINTS } from "@/utils/api-endpoints";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { ApiRequestLog } from "@/types/api";
+
+const STATUS_CLASS_PILLS = [
+  { value: "all", label: "All" },
+  { value: "2xx", label: "2xx" },
+  { value: "4xx", label: "4xx" },
+  { value: "5xx", label: "5xx" },
+] as const;
+type StatusClass = (typeof STATUS_CLASS_PILLS)[number]["value"];
+const ALL_METHODS = "__all__";
 
 type RequestLog = {
   id: string;
@@ -83,9 +100,11 @@ const normalizeLog = (entry: ApiRequestLog): RequestLog => {
 export default function RequestsPage() {
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [methodFilter, setMethodFilter] = useState(ALL_METHODS);
+  const [statusClass, setStatusClass] = useState<StatusClass>("all");
 
   const {
-    data: logs = [],
+    data: rawLogs = [],
     isLoading,
     error,
     refetch,
@@ -99,6 +118,24 @@ export default function RequestsPage() {
     },
     { errorToast: "Failed to load request logs", initialData: [] },
   );
+
+  const methodOptions = useMemo(
+    () => Array.from(new Set(rawLogs.map((l) => l.method))).sort(),
+    [rawLogs],
+  );
+
+  const logs = useMemo(() => {
+    return rawLogs.filter((log) => {
+      if (methodFilter !== ALL_METHODS && log.method !== methodFilter) return false;
+      if (statusClass !== "all") {
+        const bucket = `${Math.floor(log.statusCode / 100)}xx`;
+        if (bucket !== statusClass) return false;
+      }
+      return true;
+    });
+  }, [rawLogs, methodFilter, statusClass]);
+
+  const hasActiveFilters = methodFilter !== ALL_METHODS || statusClass !== "all";
 
   const totalRequests = logs.length;
   const successfulRequests = logs.filter((log) => log.statusCode < 400).length;
@@ -217,6 +254,60 @@ export default function RequestsPage() {
             </CardContent>
           </Card>
         ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          value={methodFilter}
+          onValueChange={(v) => {
+            setMethodFilter(v);
+            setPage(0);
+          }}
+        >
+          <SelectTrigger className="w-[140px]">
+            <SelectValue placeholder="All methods" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_METHODS}>All methods</SelectItem>
+            {methodOptions.map((method) => (
+              <SelectItem key={method} value={method}>
+                {method}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {STATUS_CLASS_PILLS.map((pill) => (
+            <button
+              key={pill.value}
+              onClick={() => {
+                setStatusClass(pill.value);
+                setPage(0);
+              }}
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                statusClass === pill.value
+                  ? "border-onSurface-default-primary bg-onSurface-default-primary text-surface-default-primary"
+                  : "border-memBorder-primary text-onSurface-default-secondary hover:bg-surface-default-secondary",
+              )}
+            >
+              {pill.label}
+            </button>
+          ))}
+        </div>
+        {hasActiveFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setMethodFilter(ALL_METHODS);
+              setStatusClass("all");
+              setPage(0);
+            }}
+          >
+            Clear filters
+          </Button>
+        )}
       </div>
 
       {error && (

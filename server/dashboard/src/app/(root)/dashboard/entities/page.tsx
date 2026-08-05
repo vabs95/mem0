@@ -1,24 +1,36 @@
 "use client";
 
-import { useState } from "react";
-import { Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Search, Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { EmptyState } from "@/components/self-hosted/empty-state";
 import DeleteConfirmationModal from "@/components/ui/delete-confirmation-modal";
 import { toast } from "@/components/ui/use-toast";
+import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
 import { ENTITY_ENDPOINTS } from "@/utils/api-endpoints";
 import { getErrorMessage } from "@/lib/error-message";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { Entity } from "@/types/api";
+import { Entity, EntityType } from "@/types/api";
+
+const TYPE_PILLS: { value: EntityType | "all"; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "user", label: "User" },
+  { value: "agent", label: "Agent" },
+  { value: "run", label: "Run" },
+  { value: "project", label: "Project" },
+];
 
 export default function EntitiesPage() {
   const [entityToDelete, setEntityToDelete] = useState<Entity | null>(null);
+  const [typeFilter, setTypeFilter] = useState<EntityType | "all">("all");
+  const [search, setSearch] = useState("");
 
   const {
     data: entities = [],
@@ -31,6 +43,17 @@ export default function EntitiesPage() {
     },
     { errorToast: "Failed to load entities", initialData: [] },
   );
+
+  const filteredEntities = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return entities.filter((e) => {
+      if (typeFilter !== "all" && e.type !== typeFilter) return false;
+      if (query && !e.id.toLowerCase().includes(query)) return false;
+      return true;
+    });
+  }, [entities, typeFilter, search]);
+
+  const hasActiveFilters = typeFilter !== "all" || search.trim() !== "";
 
   const handleDelete = async () => {
     if (!entityToDelete) return;
@@ -103,17 +126,63 @@ export default function EntitiesPage() {
     <div className="space-y-4">
       <h1 className="text-xl font-semibold font-fustat">Entities</h1>
 
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[200px] max-w-xs">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-onSurface-default-tertiary" />
+            <Input
+              placeholder="Search entity ID..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-8"
+            />
+          </div>
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setTypeFilter("all");
+                setSearch("");
+              }}
+            >
+              Clear filters
+            </Button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {TYPE_PILLS.map((pill) => (
+            <button
+              key={pill.value}
+              onClick={() => setTypeFilter(pill.value)}
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                typeFilter === pill.value
+                  ? "border-onSurface-default-primary bg-onSurface-default-primary text-surface-default-primary"
+                  : "border-memBorder-primary text-onSurface-default-secondary hover:bg-surface-default-secondary",
+              )}
+            >
+              {pill.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {isLoading ? (
         <TableSkeleton rows={5} columns={5} />
-      ) : entities.length === 0 ? (
+      ) : filteredEntities.length === 0 ? (
         <EmptyState
           title="No entities yet"
-          description="Entities appear once memories are stored with a user_id, agent_id, run_id, or project."
+          description={
+            hasActiveFilters
+              ? "No entities match the current filters."
+              : "Entities appear once memories are stored with a user_id, agent_id, run_id, or project."
+          }
         />
       ) : (
         <Card className="border-memBorder-primary overflow-hidden">
           <DataTable
-            data={entities}
+            data={filteredEntities}
             columns={columns}
             getRowKey={(row) => `${row.type}:${row.id}`}
           />
