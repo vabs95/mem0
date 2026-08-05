@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
-import { format } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { EmptyState } from "@/components/self-hosted/empty-state";
@@ -22,9 +23,9 @@ import { UpgradeBanner } from "@/components/self-hosted/upgrade-banner";
 import { toast } from "@/components/ui/use-toast";
 import { getErrorMessage } from "@/lib/error-message";
 import { api } from "@/utils/api";
-import { MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
+import { MEMORY_ENDPOINTS, TIMELINE_ENDPOINTS } from "@/utils/api-endpoints";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { Memory } from "@/types/api";
+import { Memory, TimelineEvent } from "@/types/api";
 
 const PAGE_SIZE = 20;
 // Keep in sync with ALL_MEMORIES_LIMIT in server/main.py.
@@ -52,6 +53,25 @@ export default function MemoriesPage() {
     },
     { errorToast: "Failed to load memories", initialData: [] },
   );
+
+  const {
+    data: sourceEvents = [],
+    refetch: refetchSourceEvents,
+  } = useApiQuery<TimelineEvent[]>(
+    async () => {
+      if (!selectedMemory) return [];
+      const res = await api.get<TimelineEvent[]>(
+        TIMELINE_ENDPOINTS.FOR_MEMORY(selectedMemory.id),
+      );
+      return res.data ?? [];
+    },
+    { initialData: [] },
+  );
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (selectedMemory) void refetchSourceEvents();
+  }, [selectedMemory?.id]);
 
   const totalPages = Math.ceil(memories.length / PAGE_SIZE);
   const paginatedMemories = memories.slice(
@@ -249,6 +269,26 @@ export default function MemoriesPage() {
                   </div>
                 )}
               </div>
+              {sourceEvents.length > 0 && (
+                <div className="space-y-1">
+                  <Label className="text-xs text-onSurface-default-tertiary">
+                    Produced by
+                  </Label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline">{sourceEvents[0].event_type}</Badge>
+                    {sourceEvents[0].category && (
+                      <Badge variant="outline" className="capitalize">
+                        {sourceEvents[0].category.replace(/_/g, " ")}
+                      </Badge>
+                    )}
+                    <span className="text-xs text-onSurface-default-tertiary">
+                      {formatDistanceToNow(new Date(sourceEvents[0].created_at), {
+                        addSuffix: true,
+                      })}
+                    </span>
+                  </div>
+                </div>
+              )}
               <Button
                 variant="outline"
                 size="sm"

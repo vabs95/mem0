@@ -102,3 +102,69 @@ def test_list_events_respects_limit(client):
 
     resp = client.get("/timeline/events", params={"limit": 2})
     assert len(resp.json()) == 2
+
+
+def test_create_event_with_category_and_memory_ids(client):
+    resp = client.post(
+        "/timeline/events",
+        json={
+            "event_type": "add_memory",
+            "source_agent": "codex",
+            "user_id": "u1",
+            "category": "decision",
+            "memory_ids": ["mem-1", "mem-2"],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["category"] == "decision"
+    assert body["memory_ids"] == ["mem-1", "mem-2"]
+
+    resp = client.get("/timeline/events", params={"user_id": "u1"})
+    items = resp.json()
+    assert len(items) == 1
+    assert items[0]["memory_ids"] == ["mem-1", "mem-2"]
+
+
+def test_create_event_defaults_memory_ids_to_empty_list(client):
+    resp = client.post("/timeline/events", json={"event_type": "stop", "source_agent": "codex"})
+    assert resp.status_code == 200
+    assert resp.json()["memory_ids"] == []
+    assert resp.json()["category"] is None
+
+
+def test_list_events_filters_by_category(client):
+    client.post(
+        "/timeline/events",
+        json={"event_type": "add_memory", "source_agent": "codex", "category": "decision"},
+    )
+    client.post(
+        "/timeline/events",
+        json={"event_type": "add_memory", "source_agent": "codex", "category": "bug_fix"},
+    )
+
+    resp = client.get("/timeline/events", params={"category": "decision"})
+    items = resp.json()
+    assert len(items) == 1
+    assert items[0]["category"] == "decision"
+
+
+def test_get_events_for_memory_backlink(client):
+    client.post(
+        "/timeline/events",
+        json={"event_type": "add_memory", "source_agent": "codex", "memory_ids": ["mem-a"]},
+    )
+    client.post(
+        "/timeline/events",
+        json={"event_type": "add_memory", "source_agent": "codex", "memory_ids": ["mem-b"]},
+    )
+
+    resp = client.get("/timeline/events/for-memory/mem-a")
+    assert resp.status_code == 200
+    items = resp.json()
+    assert len(items) == 1
+    assert items[0]["memory_ids"] == ["mem-a"]
+
+    resp = client.get("/timeline/events/for-memory/mem-nonexistent")
+    assert resp.status_code == 200
+    assert resp.json() == []

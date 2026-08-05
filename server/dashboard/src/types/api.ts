@@ -53,5 +53,7 @@ export interface TimelineEvent {
   project?: string | null;
   summary?: string | null;
   payload?: Record<string, unknown> | null;
+  category?: string | null;
+  memory_ids: string[];
   created_at: string;
 }

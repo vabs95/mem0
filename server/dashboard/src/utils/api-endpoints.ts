@@ -35,4 +35,6 @@ export const ENTITY_ENDPOINTS = {
 
 export const TIMELINE_ENDPOINTS = {
   EVENTS: "/timeline/events",
+  FOR_MEMORY: (memoryId: string) =>
+    `/timeline/events/for-memory/${encodeURIComponent(memoryId)}`,
 } as const;

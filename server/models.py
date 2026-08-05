@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
@@ -82,6 +83,16 @@ class TimelineEvent(Base):
     project: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # claude-mem-style classification (decision/bug_fix/task_learning/...),
+    # pulled from the same metadata.type value add_memory callers already set.
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Forward provenance link: memory ids this event produced (e.g. an
+    # add_memory tool call). Going the other way (memory -> source event) is
+    # a query against this column (JSONB containment), not a stored
+    # back-reference — see routers/timeline.py's for-memory lookup.
+    memory_ids: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False, default=list
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

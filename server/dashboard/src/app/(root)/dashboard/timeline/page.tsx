@@ -106,6 +106,19 @@ export default function TimelinePage() {
       ),
     },
     {
+      key: "category" as keyof TimelineEvent,
+      label: "Category",
+      width: 120,
+      render: (value: string | null | undefined) =>
+        value ? (
+          <Badge variant="outline" className="capitalize">
+            {value.replace(/_/g, " ")}
+          </Badge>
+        ) : (
+          <span className="text-onSurface-default-tertiary">--</span>
+        ),
+    },
+    {
       key: "source_agent" as keyof TimelineEvent,
       label: "Agent",
       width: 100,
@@ -117,6 +130,17 @@ export default function TimelinePage() {
       render: (value: string | null | undefined) => (
         <span className="text-onSurface-default-primary">{value || "--"}</span>
       ),
+    },
+    {
+      key: "memory_ids" as keyof TimelineEvent,
+      label: "Memories",
+      width: 100,
+      render: (value: string[] | undefined) =>
+        value && value.length > 0 ? (
+          <Badge variant="outline">→ {value.length}</Badge>
+        ) : (
+          <span className="text-onSurface-default-tertiary">--</span>
+        ),
     },
     {
       key: "id" as keyof TimelineEvent,
@@ -167,7 +191,7 @@ export default function TimelinePage() {
       </div>
 
       {isLoading ? (
-        <TableSkeleton rows={6} columns={5} />
+        <TableSkeleton rows={6} columns={7} />
       ) : events.length === 0 ? (
         <EmptyState
           image="requests"

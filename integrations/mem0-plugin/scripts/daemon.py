@@ -134,10 +134,48 @@ def _summarize_event(hook_name: str, input_data: dict) -> str | None:
         return "Session ended"
     if hook_name == "pre_compact":
         return "Context compacted"
+    if hook_name == "add_memory":
+        text = (input_data.get("tool_input") or {}).get("text")
+        return text[:200] if isinstance(text, str) and text else "Memory added"
     if hook_name == "post_tool_use":
         tool = input_data.get("tool_name")
         return f"Used {tool}" if tool else None
     return None
+
+
+def _extract_added_memory_ids(tool_response) -> list[str]:
+    """Pull memory ids out of an add_memory MCP tool's response.
+
+    Handles the response already being the JSON string server.py's
+    _json_call returns (``{"results": [{"id": ..., "event": "ADD"}]}``),
+    or having been unwrapped/re-wrapped by the calling editor's hook
+    payload into an MCP content-block shape (``{"content": [{"type":
+    "text", "text": "<same JSON string>"}]}``). Best-effort: any shape it
+    doesn't recognize just yields no ids, never raises (caller already
+    wraps this in a broad try/except).
+    """
+    if isinstance(tool_response, str):
+        try:
+            tool_response = json.loads(tool_response)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if isinstance(tool_response, dict):
+        content = tool_response.get("content")
+        if isinstance(content, list):
+            for block in content:
+                text = block.get("text") if isinstance(block, dict) else None
+                if isinstance(text, str):
+                    try:
+                        tool_response = json.loads(text)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    break
+    if not isinstance(tool_response, dict):
+        return []
+    results = tool_response.get("results")
+    if not isinstance(results, list):
+        return []
+    return [r["id"] for r in results if isinstance(r, dict) and r.get("id") and r.get("event") != "NONE"]
 
 
 def _post_timeline_event(hook_name: str, input_data: dict) -> None:
@@ -153,13 +191,29 @@ def _post_timeline_event(hook_name: str, input_data: dict) -> None:
         api_key = _handlers.resolve_api_key()
         if not api_key:
             return
+
+        category = None
+        memory_ids: list[str] = []
+        event_type = hook_name
+        # An add_memory tool call arrives here as a generic post_tool_use
+        # hook — reclassify it to its own event_type and attach the
+        # provenance link (which memories this event produced) and the
+        # caller's own metadata.type classification (decision/bug_fix/...,
+        # set in _handlers.py's cmd_enforce_metadata), claude-mem-style.
+        if hook_name == "post_tool_use" and (input_data.get("tool_name") or "").endswith("__add_memory"):
+            event_type = "add_memory"
+            memory_ids = _extract_added_memory_ids(input_data.get("tool_response"))
+            category = (input_data.get("tool_input") or {}).get("metadata", {}).get("type")
+
         cwd = input_data.get("cwd")
         body = {
-            "event_type": hook_name,
+            "event_type": event_type,
             "source_agent": os.environ.get("MEM0_PLATFORM", "claude-code"),
             "user_id": _handlers.resolve_user_id(),
             "project": _handlers.resolve_project_id(cwd),
-            "summary": _summarize_event(hook_name, input_data),
+            "summary": _summarize_event(event_type, input_data),
+            "category": category,
+            "memory_ids": memory_ids,
         }
         data = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json", **auth_headers(api_key)}
