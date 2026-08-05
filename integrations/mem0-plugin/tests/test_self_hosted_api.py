@@ -64,14 +64,13 @@ def test_self_hosted_search_maps_app_id_filter(monkeypatch):
 
 
 def test_self_hosted_search_flattens_nested_metadata_filter(monkeypatch):
-    """Regression test for a real production bug: cloud-style callers
-    (the LLM agent itself, and _search.py's shared helper) filter on
-    {"metadata": {"type": "..."}}. Self-hosted stores those fields flat
-    on the payload -- there's no "metadata" field to match -- so the
-    backend's filter builder rejected the nested dict with a 400
-    ("Unsupported filter operator: type"), confirmed live in an actual
-    Codex session. _self_hosted_filters must lift metadata.* keys to the
-    top level instead of forwarding them nested.
+    """Cloud-style callers (the LLM agent itself, and _search.py's shared
+    helper) filter on {"metadata": {"type": "..."}}. Self-hosted stores
+    those fields flat on the payload -- there's no "metadata" field to
+    match -- so the backend's filter builder rejects the nested dict with
+    a 400 ("Unsupported filter operator: type"). _self_hosted_filters must
+    lift metadata.* keys to the top level instead of forwarding them
+    nested.
     """
     from _api import search_memories
 

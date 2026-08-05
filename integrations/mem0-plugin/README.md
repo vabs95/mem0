@@ -263,6 +263,15 @@ python integrations/mem0-plugin/scripts/setup_coding_categories.py --apply
 
 Requires the `mem0ai` Python SDK (`pip install mem0ai`) and `MEM0_API_KEY` set. `project.update(custom_categories=[...])` always replaces the full list.
 
+## Architecture
+
+Lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `Stop`, etc.) are dispatched through a single local warm daemon, not a fresh process per hook call:
+
+- **One daemon per machine, shared across editors.** The first hook invocation spawns a background HTTP server on localhost (`daemon.py`); every subsequent hook from any client (Claude Code, Codex, ...) on that machine dispatches to the same running process instead of paying Python startup cost each time. It shuts itself down after a period of inactivity and respawns on demand.
+- **Self-updating.** The daemon fingerprints its own source files at startup and shuts down within about a minute of detecting a change on disk (e.g. after a plugin upgrade); the next hook call spawns a fresh instance with the new code. No manual restart is needed for plugin-script changes — only an MCP *tool* update still requires reconnecting the client (see "Updating the plugin" above).
+- **`_handlers.py` holds all hook logic**, called identically by every platform's thin adapter — there's exactly one implementation of each hook to maintain, not one per editor or OS.
+- **`_api.py` is the cloud/self-hosted translation layer.** Set `MEM0_API_MODE=self_hosted` and `MEM0_API_URL` to point the plugin at a self-hosted server instead of the hosted platform; `_api.py` translates cloud-shaped calls (`app_id`, nested `metadata.*` filters) into the self-hosted REST API's flat `project` field and filter shape.
+
 ## MCP Tools
 
 Once installed, the following tools are available:
@@ -276,8 +285,8 @@ Once installed, the following tools are available:
 | `update_memory` | Overwrite a memory's text by ID |
 | `delete_memory` | Delete a single memory by ID |
 | `delete_all_memories` | Bulk delete all memories in scope |
-| `delete_entities` | Delete a user/agent/app/run entity and its memories |
-| `list_entities` | List users/agents/apps/runs stored in Mem0 |
+| `delete_entities` | Delete a user/agent/app (project)/run entity and its memories |
+| `list_entities` | List users/agents/apps (projects)/runs stored in Mem0 |
 
 ## License
 

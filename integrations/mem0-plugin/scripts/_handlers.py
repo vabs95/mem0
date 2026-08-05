@@ -37,6 +37,19 @@ from _api import list_memories  # noqa: E402
 from _identity import resolve_api_key, resolve_user_id  # noqa: E402
 from _platform import spawn_bg  # noqa: E402
 from _project import resolve_branch, resolve_project_id  # noqa: E402
+from _search import format_results_for_context, search_memories, should_rerank  # noqa: E402
+
+
+def _dedupe_by_id(*result_lists: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    combined: list[dict] = []
+    for results in result_lists:
+        for m in results:
+            mid = m.get("id", "")
+            if mid not in seen:
+                seen.add(mid)
+                combined.append(m)
+    return combined
 
 if os.environ.get("MEM0_DEBUG"):
     _log_dir = os.path.expanduser("~/.mem0")
@@ -426,71 +439,26 @@ def cmd_user_prompt(input_data: dict) -> None:
     ctx_parts = []
 
     if has_resume:
-        try:
-            env = os.environ.copy()
-            env["PYTHONPATH"] = SCRIPT_DIR
-            env["MEM0_SEARCH_USER"] = user
-            env["MEM0_PROJECT_ID"] = project_id
-            res = subprocess.run(
-                [sys.executable, "-c", """
-import os, sys
-sys.path.insert(0, os.environ.get('PYTHONPATH', '.'))
-from _search import search_memories, format_results_for_context, should_rerank
-api_key = os.environ.get('MEM0_API_KEY', '')
-user_id = os.environ.get('MEM0_SEARCH_USER', 'default')
-project_id = os.environ.get('MEM0_PROJECT_ID', 'unknown')
-rerank = should_rerank()
-state = search_memories(api_key, user_id, project_id, 'session state current task', metadata_type='session_state', top_k=3, rerank=rerank)
-decisions = search_memories(api_key, user_id, project_id, 'recent decisions and learnings', metadata_type='decision', top_k=3, rerank=rerank)
-combined = state + decisions
-seen = set()
-unique = []
-for m in combined:
-    mid = m.get('id', '')
-    if mid not in seen:
-        seen.add(mid)
-        unique.append(m)
-if unique:
-    print(format_results_for_context(unique, heading='Session context recovered from mem0'))
-    print('\\nThese memories provide context for resuming work.')
-else:
-    print('No session state found in mem0.')
-"""],
-                env=env, capture_output=True, text=True
+        rerank = should_rerank()
+        state = search_memories(
+            api_key, user, project_id, "session state current task", metadata_type="session_state", top_k=3, rerank=rerank
+        )
+        decisions = search_memories(
+            api_key, user, project_id, "recent decisions and learnings", metadata_type="decision", top_k=3, rerank=rerank
+        )
+        unique = _dedupe_by_id(state, decisions)
+        if unique:
+            ctx_parts.append(
+                format_results_for_context(unique, heading="Session context recovered from mem0")
+                + "\nThese memories provide context for resuming work."
             )
-            resume_results = res.stdout.strip()
-            if resume_results:
-                ctx_parts.append(resume_results)
-        except Exception:
-            pass
+        else:
+            ctx_parts.append("No session state found in mem0.")
 
     if not has_resume and os.environ.get("MEM0_PREFETCH", "true") != "false":
-        try:
-            env = os.environ.copy()
-            env["PYTHONPATH"] = SCRIPT_DIR
-            env["MEM0_SEARCH_USER"] = user
-            env["MEM0_PROJECT_ID"] = project_id
-            env["MEM0_SEARCH_QUERY"] = prompt
-            res = subprocess.run(
-                [sys.executable, "-c", """
-import os, sys
-sys.path.insert(0, os.environ.get('PYTHONPATH', '.'))
-from _search import search_memories, format_results_for_context, should_rerank
-api_key = os.environ.get('MEM0_API_KEY', '')
-user_id = os.environ.get('MEM0_SEARCH_USER', 'default')
-project_id = os.environ.get('MEM0_PROJECT_ID', 'unknown')
-query = os.environ.get('MEM0_SEARCH_QUERY', '')
-results = search_memories(api_key, user_id, project_id, query, top_k=5, rerank=should_rerank())
-if results:
-    print(format_results_for_context(results, heading='Relevant memories (auto-retrieved for this request)'))
-"""],
-                env=env, capture_output=True, text=True
-            )
-            prefetch_results = res.stdout.strip()
-            if prefetch_results:
-                ctx_parts.append(prefetch_results)
-        except Exception:
-            pass
+        results = search_memories(api_key, user, project_id, prompt, top_k=5, rerank=should_rerank())
+        if results:
+            ctx_parts.append(format_results_for_context(results, heading="Relevant memories (auto-retrieved for this request)"))
 
     if has_remember:
         ctx_parts.append("Remember intent detected. The /mem0:remember skill auto-classifies, sets confidence=1.0, and stores verbatim.")
@@ -623,39 +591,10 @@ def cmd_on_bash_output(input_data: dict) -> None:
     cwd = input_data.get("cwd") or "."
     project_id = resolve_project_id(cwd)
 
-    results = ""
-    try:
-        env = os.environ.copy()
-        env["PYTHONPATH"] = SCRIPT_DIR
-        env["MEM0_SEARCH_QUERY"] = error_query
-        env["MEM0_SEARCH_USER"] = user
-        env["MEM0_PROJECT_ID"] = project_id
-        res = subprocess.run(
-            [sys.executable, "-c", """
-import os, sys
-sys.path.insert(0, os.environ.get('PYTHONPATH', '.'))
-from _search import search_memories, format_results_for_context, should_rerank
-api_key = os.environ.get('MEM0_API_KEY', '')
-user_id = os.environ.get('MEM0_SEARCH_USER', 'default')
-project_id = os.environ.get('MEM0_PROJECT_ID', 'unknown')
-query = os.environ.get('MEM0_SEARCH_QUERY', '')
-rerank = should_rerank()
-r1 = search_memories(api_key, user_id, project_id, query, metadata_type='anti_pattern', top_k=3, rerank=rerank)
-r2 = search_memories(api_key, user_id, project_id, query, metadata_type='bug_fix', top_k=3, rerank=rerank)
-seen = set()
-combined = []
-for m in r1 + r2:
-    mid = m.get('id', '')
-    if mid not in seen:
-        seen.add(mid)
-        combined.append(m)
-print(format_results_for_context(combined, heading='Prior error memories'), end='')
-"""],
-            env=env, capture_output=True, text=True
-        )
-        results = res.stdout.strip()
-    except Exception:
-        pass
+    rerank = should_rerank()
+    anti_patterns = search_memories(api_key, user, project_id, error_query, metadata_type="anti_pattern", top_k=3, rerank=rerank)
+    bug_fixes = search_memories(api_key, user, project_id, error_query, metadata_type="bug_fix", top_k=3, rerank=rerank)
+    results = format_results_for_context(_dedupe_by_id(anti_patterns, bug_fixes), heading="Prior error memories")
 
     ctx = f"Error detected in command output\n\n`{command}` produced an error:\n> {error_line}\n"
     if file_display:

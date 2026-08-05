@@ -20,16 +20,19 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-pytest.importorskip("fastapi", reason="fastapi not installed")
-
-_SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "server")
-if _SERVER_DIR not in sys.path:
-    sys.path.insert(0, _SERVER_DIR)
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+pytest.importorskip("fastapi", reason="fastapi not installed")
+
+# server/ itself must be importable (main.py does `from auth import ...`,
+# `from models import ...` etc, not `from server.auth import ...`), mirroring
+# how it runs in Docker -- same trick as test_api_keys_router.py. Only the
+# in-function imports below (db, models, routers.export) depend on this.
+_SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "server")
+if _SERVER_DIR not in sys.path:
+    sys.path.insert(0, _SERVER_DIR)
 
 
 @pytest.fixture

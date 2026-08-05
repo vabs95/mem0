@@ -11,8 +11,8 @@ This sidecar exposes MCP tools for the self-hosted Mem0 REST server. It keeps th
 - `update_memory` (updates a memory)
 - `delete_memory` (deletes a memory)
 - `delete_all_memories` (deletes memories for a user/run scope)
-- `list_entities` (lists users, agents, and runs holding memories)
-- `delete_entities` (removes user, agent, or run entities)
+- `list_entities` (lists users, agents, runs, and projects holding memories)
+- `delete_entities` (removes a user, agent, run, or project entity)
 
 ## Run With Docker Compose
 

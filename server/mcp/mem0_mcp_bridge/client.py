@@ -3,7 +3,14 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import functools
+
 import httpx
+
+
+@functools.lru_cache(maxsize=8)
+def _pooled_client(api_url: str, timeout: float) -> httpx.Client:
+    return httpx.Client(timeout=timeout)
 
 
 class Mem0SelfHostedClient:
@@ -37,18 +44,22 @@ class Mem0SelfHostedClient:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.request(
-                method,
-                f"{self.api_url}{path}",
-                headers=self.headers,
-                json=json_body,
-                params={k: v for k, v in (params or {}).items() if v is not None},
-            )
-            response.raise_for_status()
-            if not response.content:
-                return {}
-            return response.json()
+        # Reuse one connection-pooled client per (api_url, timeout) pair
+        # instead of opening a fresh TCP/TLS connection for every tool
+        # call -- with_api_key() creates a new instance per request (one
+        # per distinct caller identity), so pooling has to be keyed rather
+        # than per-instance to actually help.
+        response = _pooled_client(self.api_url, self.timeout).request(
+            method,
+            f"{self.api_url}{path}",
+            headers=self.headers,
+            json=json_body,
+            params={k: v for k, v in (params or {}).items() if v is not None},
+        )
+        response.raise_for_status()
+        if not response.content:
+            return {}
+        return response.json()
 
 
 def build_filters(

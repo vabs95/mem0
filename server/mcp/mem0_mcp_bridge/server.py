@@ -275,7 +275,7 @@ def delete_all_memories(
     return _json_call(_client().request, "DELETE", "/memories", params=params)
 
 
-@server.tool(description="List users, agents, and runs currently holding memories.")
+@server.tool(description="List users, agents, runs, and projects currently holding memories.")
 def list_entities() -> str:
     return _json_call(_client().request, "GET", "/entities")
 
@@ -324,10 +324,13 @@ def memory_assistant() -> str:
 
 def main() -> None:
     logger.info("Starting Mem0 self-hosted MCP bridge at %s:%s", server.settings.host, server.settings.port)
-    # Wrap the ASGI app with header-extraction middleware
-    original_app = server.streamable_http_app()
-    wrapped_app = _HeaderMiddleware(original_app)
-    # Replace the method so the server uses our wrapped app
+    # FastMCP.run(transport="streamable-http") builds its Starlette app by
+    # calling self.streamable_http_app() internally -- there's no public
+    # constructor param or run() argument to inject ASGI middleware around
+    # it. Pre-build the app once and monkey-patch the method to return the
+    # already-wrapped instance, so run() picks it up without modifying the
+    # `mcp` SDK.
+    wrapped_app = _HeaderMiddleware(server.streamable_http_app())
     server.streamable_http_app = lambda: wrapped_app  # type: ignore[method-assign]
     server.run(transport="streamable-http")
 

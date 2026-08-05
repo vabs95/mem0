@@ -91,8 +91,7 @@ def _self_hosted_filters(value: Any) -> Any:
         # instead of forwarding a nested dict, which the backend's
         # filter builder otherwise rejects with 400 (a dict value there
         # means "operator expression", and "type"/"source"/etc aren't
-        # recognized operators). Confirmed live: an agent's own
-        # search_memories call, following this exact shape, 400'd.
+        # recognized operators).
         if key == "metadata" and isinstance(item, dict):
             for mk, mv in item.items():
                 mapped[mk] = _self_hosted_filters(mv)

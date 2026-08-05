@@ -1,19 +1,15 @@
 """Tests for daemon.py's timeline-event body building and its concurrency
 safety across the identity-env-apply / handler-dispatch / body-build cycle.
 
-Regression coverage for a real production bug: the daemon is a single
-process shared by every editor on the machine (Claude Code, Codex, ...).
-_apply_request_env used to run outside any lock, and the timeline event's
-body used to be built by a detached background thread reading
-os.environ/cached resolvers *after* _dispatch_lock was released — so a
-concurrent request from a different platform could overwrite
-MEM0_PLATFORM/MEM0_USER_ID/etc. in the window before the background thread
-got scheduled, misattributing the event (observed live: Codex-originated
-timeline events logged with source_agent "claude-code" because a Claude
-Code hook fired around the same time). The fix moves env-apply +
-dispatch + body-building into one atomic region under _dispatch_lock, so
-the background thread only ever does pure network I/O on an
-already-resolved dict.
+The daemon is a single process shared by every editor on the machine
+(Claude Code, Codex, ...), so os.environ and cached identity resolvers are
+mutable state shared across concurrent requests. Env-apply, dispatch, and
+timeline-body-building must happen as one atomic region under
+_dispatch_lock — if body-building were deferred to a detached background
+thread reading os.environ after the lock released, a concurrent request
+from a different platform could overwrite MEM0_PLATFORM/MEM0_USER_ID/etc.
+first and misattribute the event. The background thread must only ever do
+pure network I/O on an already-resolved dict.
 """
 
 from __future__ import annotations

@@ -59,8 +59,7 @@ def test_first_prompt_gets_full_rubric():
 
     Guidance must say `type` as a flat filter key, not "metadata.type" —
     the latter reads naturally as {"metadata": {"type": ...}}, a nested
-    shape the self-hosted backend rejects with a 400 (confirmed live: an
-    agent following the old wording hit exactly this). See _handlers.py's
+    shape the self-hosted backend rejects with a 400. See _handlers.py's
     rubric string.
     """
     output = _run_hook("How should we refactor the auth module?")
