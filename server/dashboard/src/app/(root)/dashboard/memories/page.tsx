@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -49,7 +48,7 @@ const DATE_RANGES = {
 type DateRangeKey = keyof typeof DATE_RANGES;
 
 export default function MemoriesPage() {
-  const [userId, setUserId] = useState("");
+  const [userId, setUserId] = useState(ALL_VALUES);
   const [agentId, setAgentId] = useState(ALL_VALUES);
   const [runId, setRunId] = useState(ALL_VALUES);
   const [project, setProject] = useState(ALL_VALUES);
@@ -77,7 +76,7 @@ export default function MemoriesPage() {
   } = useApiQuery<Memory[]>(
     async () => {
       const params = {
-        user_id: userId.trim() || undefined,
+        user_id: userId === ALL_VALUES ? undefined : userId,
         agent_id: agentId === ALL_VALUES ? undefined : agentId,
         run_id: runId === ALL_VALUES ? undefined : runId,
         project: project === ALL_VALUES ? undefined : project,
@@ -98,7 +97,7 @@ export default function MemoriesPage() {
   useEffect(() => {
     setPage(0);
     void refetch();
-  }, [agentId, runId, project]);
+  }, [userId, agentId, runId, project]);
 
   const filteredByStatus =
     statusFilter === "all"
@@ -191,18 +190,19 @@ export default function MemoriesPage() {
       )}
 
       <div className="flex flex-wrap gap-2">
-        <Input
-          placeholder="Filter by User ID (optional)"
-          value={userId}
-          onChange={(e) => setUserId(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              setPage(0);
-              refetch();
-            }
-          }}
-          className="w-56"
-        />
+        <Select value={userId} onValueChange={setUserId}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All users" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUES}>All users</SelectItem>
+            {byType("user").map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={project} onValueChange={setProject}>
           <SelectTrigger className="w-[160px]">
             <SelectValue placeholder="All projects" />

@@ -6,12 +6,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { getErrorMessage } from "@/lib/error-message";
 import { api } from "@/utils/api";
-import { MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
-import { Memory } from "@/types/api";
+import { ENTITY_ENDPOINTS, MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
+import { useApiQuery } from "@/hooks/use-api-query";
+import { Entity, Memory } from "@/types/api";
 
 interface ScoreDetails {
   semantic_score?: number;
@@ -30,11 +38,22 @@ interface ScoredMemory extends Memory {
   score_details?: ScoreDetails;
 }
 
+const ALL_VALUES = "__all__";
+
 export default function ScoringDebuggerPage() {
   const [query, setQuery] = useState("");
-  const [userId, setUserId] = useState("");
+  const [userId, setUserId] = useState(ALL_VALUES);
   const [results, setResults] = useState<ScoredMemory[]>([]);
   const [loading, setLoading] = useState(false);
+
+  const { data: entities = [] } = useApiQuery<Entity[]>(
+    async () => {
+      const res = await api.get<Entity[]>(ENTITY_ENDPOINTS.BASE);
+      return res.data ?? [];
+    },
+    { errorToast: "Failed to load entities", initialData: [] },
+  );
+  const users = entities.filter((e) => e.type === "user").map((e) => e.id).sort();
 
   const handleSearch = async () => {
     if (!query.trim()) return;
@@ -42,7 +61,7 @@ export default function ScoringDebuggerPage() {
     try {
       const res = await api.post(MEMORY_ENDPOINTS.SEARCH, {
         query: query.trim(),
-        filters: userId.trim() ? { user_id: userId.trim() } : {},
+        filters: userId === ALL_VALUES ? {} : { user_id: userId },
         top_k: 10,
         explain: true,
       });
@@ -86,12 +105,19 @@ export default function ScoringDebuggerPage() {
               className="pl-9"
             />
           </div>
-          <Input
-            placeholder="User ID filter (optional)"
-            value={userId}
-            onChange={(e) => setUserId(e.target.value)}
-            className="w-full sm:w-48"
-          />
+          <Select value={userId} onValueChange={setUserId}>
+            <SelectTrigger className="w-full sm:w-48">
+              <SelectValue placeholder="All users" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUES}>All users</SelectItem>
+              {users.map((id) => (
+                <SelectItem key={id} value={id}>
+                  {id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button onClick={handleSearch} disabled={loading} className="gap-2">
             <Calculator className="size-4" />
             Calculate Scores

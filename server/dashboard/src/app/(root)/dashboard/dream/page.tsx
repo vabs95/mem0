@@ -6,10 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import DeleteConfirmationModal from "@/components/ui/delete-confirmation-modal";
 import { api } from "@/utils/api";
-import { MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
+import { ENTITY_ENDPOINTS, MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
+import { useApiQuery } from "@/hooks/use-api-query";
+import { Entity } from "@/types/api";
 import { isAxiosError } from "axios";
 
 interface DreamResult {
@@ -19,13 +28,27 @@ interface DreamResult {
   memories_merged?: number;
 }
 
+const ALL_VALUES = "__all__";
+
 export default function DreamPage() {
-  const [userId, setUserId] = useState("");
-  const [projectId, setProjectId] = useState("");
+  const [userId, setUserId] = useState(ALL_VALUES);
+  const [projectId, setProjectId] = useState(ALL_VALUES);
   const [similarityThreshold, setSimilarityThreshold] = useState("0.90");
   const [running, setRunning] = useState(false);
   const [lastResult, setLastResult] = useState<DreamResult | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const { data: entities = [] } = useApiQuery<Entity[]>(
+    async () => {
+      const res = await api.get<Entity[]>(ENTITY_ENDPOINTS.BASE);
+      return res.data ?? [];
+    },
+    { errorToast: "Failed to load entities", initialData: [] },
+  );
+  const byType = (type: Entity["type"]) =>
+    entities.filter((e) => e.type === type).map((e) => e.id).sort();
+
+  const hasScope = userId !== ALL_VALUES || projectId !== ALL_VALUES;
 
   const handleTriggerDream = async () => {
     setConfirmOpen(false);
@@ -33,8 +56,8 @@ export default function DreamPage() {
     setLastResult(null);
     try {
       const res = await api.post(MEMORY_ENDPOINTS.DREAM, {
-        user_id: userId.trim() || undefined,
-        project: projectId.trim() || undefined,
+        user_id: userId === ALL_VALUES ? undefined : userId,
+        project: projectId === ALL_VALUES ? undefined : projectId,
         similarity_threshold: parseFloat(similarityThreshold) || 0.90,
         limit: 100,
       });
@@ -71,26 +94,48 @@ export default function DreamPage() {
       <Card className="p-5 border-memBorder-primary space-y-4">
         <h2 className="text-sm font-semibold">Run Consolidation Pass</h2>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Input
-            placeholder="User ID (optional)"
-            value={userId}
-            onChange={(e) => setUserId(e.target.value)}
-          />
-          <Input
-            placeholder="Project ID (optional)"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-          />
+          <Select value={userId} onValueChange={setUserId}>
+            <SelectTrigger>
+              <SelectValue placeholder="All users" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUES}>No user scope</SelectItem>
+              {byType("user").map((id) => (
+                <SelectItem key={id} value={id}>
+                  {id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={projectId} onValueChange={setProjectId}>
+            <SelectTrigger>
+              <SelectValue placeholder="All projects" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUES}>No project scope</SelectItem>
+              {byType("project").map((id) => (
+                <SelectItem key={id} value={id}>
+                  {id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Input
             placeholder="Similarity Threshold (default: 0.90)"
             value={similarityThreshold}
             onChange={(e) => setSimilarityThreshold(e.target.value)}
           />
         </div>
+        {!hasScope && (
+          <p className="text-xs text-onSurface-danger-primary">
+            Select at least a user or project scope -- Dream requires a scope so it never
+            consolidates across every tenant at once.
+          </p>
+        )}
 
         <Button
           onClick={() => setConfirmOpen(true)}
-          disabled={running}
+          disabled={running || !hasScope}
           className="gap-2 bg-purple-600 hover:bg-purple-700"
         >
           {running ? <RefreshCw className="size-4 animate-spin" /> : <Play className="size-4" />}
