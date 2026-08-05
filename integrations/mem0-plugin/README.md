@@ -67,6 +67,8 @@ Claude Code and Claude Cowork share the same plugin system.
 
 This installs the full plugin including the MCP server, lifecycle hooks (automatic memory capture), and the Mem0 SDK skill.
 
+> **Self-hosting mem0?** `.mcp.json` in your clone points at the hosted `mcp.mem0.ai` endpoint by default. Edit its `url` field to your own server's `/mcp` path (e.g. `http://localhost:8888/mcp`), same as the Codex self-hosting note below.
+
 ### Codex
 
 **Option A — Direct MCP** (fastest, MCP only):

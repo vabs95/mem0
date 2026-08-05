@@ -169,7 +169,11 @@ if handler == "add_memory":
     if "session_id" not in meta:
         sid = os.environ.get("MEM0_SESSION_ID", "")
         if not sid:
-            session_file = "/tmp/mem0_session_id_" + os.environ.get("USER", "default")
+            # Must match the same resolved user id _handlers.py's
+            # cmd_session_start() used to name this file -- raw $USER
+            # diverges from it whenever MEM0_USER_ID overrides the OS
+            # username, silently losing session_id enrichment.
+            session_file = "/tmp/mem0_session_id_" + (resolved_uid or os.environ.get("USER", "default"))
             if os.path.isfile(session_file):
                 try:
                     with open(session_file) as f:
