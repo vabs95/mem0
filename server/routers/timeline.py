@@ -7,7 +7,8 @@ from db import get_db
 from fastapi import APIRouter, Depends, Query
 from models import TimelineEvent
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import cast, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/timeline", tags=["timeline"])
@@ -101,7 +102,12 @@ def get_events_for_memory(
     the reverse direction, a query rather than a stored back-reference."""
     stmt = select(TimelineEvent).order_by(TimelineEvent.created_at.desc())
     if db.bind is not None and db.bind.dialect.name == "postgresql":
-        stmt = stmt.where(TimelineEvent.memory_ids.contains([memory_id]))
+        # .contains() dispatches through the column's declared type, which
+        # is the generic JSON side of the with_variant() in models.py (its
+        # .contains() is a plain string LIKE, not a JSONB op) — .op("@>")
+        # forces the real Postgres containment operator regardless of type
+        # resolution, matching what's actually indexed (GIN, migration 008).
+        stmt = stmt.where(TimelineEvent.memory_ids.op("@>")(cast([memory_id], JSONB)))
         return db.execute(stmt).scalars().all()
     # Non-Postgres (e.g. SQLite in tests): JSONB containment isn't
     # available, so filter in Python. Fine at this table's scale — the
