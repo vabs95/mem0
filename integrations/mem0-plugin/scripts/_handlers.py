@@ -33,7 +33,7 @@ sys.path.insert(0, SCRIPT_DIR)
 # request/response tracing, just "did this background task blow up."
 BACKGROUND_LOG_FILE = os.path.expanduser("~/.mem0/background.log")
 
-from _api import list_memories  # noqa: E402
+from _api import api_mode, list_memories  # noqa: E402
 from _identity import resolve_api_key, resolve_user_id  # noqa: E402
 from _platform import spawn_bg  # noqa: E402
 from _project import resolve_branch, resolve_project_id  # noqa: E402
@@ -275,12 +275,22 @@ def cmd_session_start(input_data: dict) -> None:
     if api_key:
         try:
             filters = {'OR': [{'user_id': '*'}]} if global_search else {'AND': [{'user_id': user}, {'app_id': project_id}]}
-            status, data = list_memories(api_key, {'filters': filters, 'page_size': 1}, timeout=5)
+            # Cloud's paginated endpoint returns a real total `count`
+            # independent of page_size, so page_size=1 is enough there.
+            # Self-hosted's GET /memories has no such pagination metadata --
+            # page_size just caps top_k, so len(results) IS the count,
+            # silently capped at whatever page_size was requested. Request a
+            # real sample size for self-hosted so this banner shows an
+            # accurate count instead of always reporting at most 1.
+            count_page_size = 1000 if api_mode() == "self_hosted" else 1
+            status, data = list_memories(api_key, {'filters': filters, 'page_size': count_page_size}, timeout=5)
             if status in (200, 201):
                 if isinstance(data, dict) and 'count' in data:
                     mem_count = str(data['count'])
                 elif isinstance(data, dict) and 'results' in data:
                     mem_count = str(len(data['results']))
+                    if count_page_size > 1 and len(data['results']) >= count_page_size:
+                        mem_count += "+"
                 elif isinstance(data, list):
                     mem_count = str(len(data))
                 else:
