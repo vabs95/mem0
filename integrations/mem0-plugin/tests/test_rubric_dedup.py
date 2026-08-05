@@ -19,9 +19,13 @@ SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "scripts")
 
 @pytest.fixture(autouse=True)
 def _clean_rubric_flag(tmp_path, monkeypatch):
-    """Use a temp dir for the rubric flag file and clean msg counter."""
+    """Use a temp dir for the rubric flag file and clean msg counter.
+
+    msg_count is now scoped by (user, project) -- see _handlers.py's
+    cmd_user_prompt -- matching _run_hook's MEM0_PROJECT_ID=test-project.
+    """
     monkeypatch.setenv("MEM0_RUBRIC_DIR", str(tmp_path))
-    msg_count_file = "/tmp/mem0_msg_count_testuser"
+    msg_count_file = "/tmp/mem0_msg_count_testuser_test-project"
     yield
     if os.path.exists(msg_count_file):
         os.unlink(msg_count_file)
