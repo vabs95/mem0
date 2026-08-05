@@ -83,6 +83,20 @@ def _self_hosted_filters(value: Any) -> Any:
 
     mapped: dict[str, Any] = {}
     for key, item in flat.items():
+        # Cloud-style callers (including the LLM agent itself, and
+        # _search.py's shared helper) nest arbitrary metadata fields
+        # under a literal "metadata" key: {"metadata": {"type": "x"}}.
+        # Self-hosted stores those fields flat on the payload -- there's
+        # no "metadata" field to match -- so lift them to top-level keys
+        # instead of forwarding a nested dict, which the backend's
+        # filter builder otherwise rejects with 400 (a dict value there
+        # means "operator expression", and "type"/"source"/etc aren't
+        # recognized operators). Confirmed live: an agent's own
+        # search_memories call, following this exact shape, 400'd.
+        if key == "metadata" and isinstance(item, dict):
+            for mk, mv in item.items():
+                mapped[mk] = _self_hosted_filters(mv)
+            continue
         mapped["project" if key == "app_id" else key] = _self_hosted_filters(item)
     return mapped
 
