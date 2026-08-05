@@ -262,7 +262,9 @@ def main():
     state = parse_transcript(lines)
 
     # Skip if agent already stored memories this session — avoid duplicate writes.
-    stats_file = f"/tmp/mem0_session_stats_{os.environ.get('USER', 'default')}.json"
+    # Must match session_stats.py's own (user, project)-scoped file naming, or
+    # concurrent sessions in different projects for the same user collide.
+    stats_file = f"/tmp/mem0_session_stats_{user_id}_{project_id}.json"
     try:
         with open(stats_file) as f:
             stats = json.load(f)

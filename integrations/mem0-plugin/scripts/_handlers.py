@@ -147,7 +147,10 @@ def cmd_enforce_metadata(input_data: dict) -> None:
         if "session_id" not in meta:
             sid = os.environ.get("MEM0_SESSION_ID", "")
             if not sid:
-                session_file = os.path.join(tempfile.gettempdir(), f"mem0_session_id_{uid}")
+                # Scoped by project too, not just user -- otherwise concurrent
+                # sessions in different projects for the same user clobber
+                # each other's cached session id.
+                session_file = os.path.join(tempfile.gettempdir(), f"mem0_session_id_{uid}_{aid}")
                 if os.path.isfile(session_file):
                     try:
                         with open(session_file, "r") as f:
@@ -186,10 +189,10 @@ def cmd_enforce_metadata(input_data: dict) -> None:
 
     if handler == "add_memory":
         cat = tool_input.get("metadata", {}).get("type") or tool_input.get("metadata", {}).get("category") or ""
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "add", cat])
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "add", cat], cwd=input_data.get("cwd"))
         spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "telemetry.py"), "tool_use", "--tool=add_memory"])
     elif handler in ("search_memories", "get_memories"):
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "search"])
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "search"], cwd=input_data.get("cwd"))
         spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "telemetry.py"), "tool_use", "--tool=search_memories"])
 
 
@@ -228,12 +231,18 @@ def cmd_on_file_read(input_data: dict) -> None:
 def cmd_session_start(input_data: dict) -> None:
     source = input_data.get("source", "startup")
     user = resolve_user_id()
+    cwd = input_data.get("cwd") or "."
+    project_id = resolve_project_id(cwd)
+    # user+project scoping throughout this function: two concurrent sessions
+    # for the same user in different projects must not share (and clobber)
+    # each other's session id / dedup / counter files.
+    scope = f"{user}_{project_id}"
 
     session_id = input_data.get("session_id") or ""
     if not session_id:
         session_id = f"ses_{int(time.time())}_{os.getpid()}"
 
-    session_file = os.path.join(tempfile.gettempdir(), f"mem0_session_id_{user}")
+    session_file = os.path.join(tempfile.gettempdir(), f"mem0_session_id_{scope}")
     try:
         with open(session_file, "w") as f:
             f.write(session_id)
@@ -241,28 +250,24 @@ def cmd_session_start(input_data: dict) -> None:
         pass
 
     if source == "startup":
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "init"])
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "init"], cwd=cwd)
         spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "load_settings.py"), "init"])
 
-        for f in glob.glob(os.path.join(tempfile.gettempdir(), f"mem0_recent_reads_{user}_*")):
+        for f in glob.glob(os.path.join(tempfile.gettempdir(), f"mem0_recent_reads_{scope}_*")):
             try:
                 os.remove(f)
             except OSError:
                 pass
-        for filename in [f"mem0_rubric_injected_{user}", f"mem0_msg_count_{user}"]:
-            try:
-                os.remove(os.path.join(tempfile.gettempdir(), filename))
-            except OSError:
-                pass
-        for f in glob.glob(os.path.join(tempfile.gettempdir(), "mem0_rubric_*")):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+        try:
+            os.remove(os.path.join(tempfile.gettempdir(), f"mem0_msg_count_{scope}"))
+        except OSError:
+            pass
+        # Rubric flags are already keyed by session_id, which is unique per
+        # session -- no need to (and no longer safe to) bulk-delete every
+        # mem0_rubric_* file on every startup, which used to wipe other
+        # concurrent sessions' already-shown flags too.
 
     api_key = resolve_api_key()
-    cwd = input_data.get("cwd") or "."
-    project_id = resolve_project_id(cwd)
     branch = resolve_branch(cwd)
     global_search = os.environ.get("MEM0_GLOBAL_SEARCH", "false") == "true"
 
@@ -359,9 +364,10 @@ def cmd_user_prompt(input_data: dict) -> None:
     cwd = input_data.get("cwd") or "."
     project_id = resolve_project_id(cwd)
     session_id = input_data.get("session_id") or ""
+    scope = f"{user}_{project_id}"
 
     if not session_id:
-        session_file = os.path.join(tempfile.gettempdir(), f"mem0_session_id_{user}")
+        session_file = os.path.join(tempfile.gettempdir(), f"mem0_session_id_{scope}")
         if os.path.isfile(session_file):
             try:
                 with open(session_file, "r") as f:
@@ -379,7 +385,7 @@ def cmd_user_prompt(input_data: dict) -> None:
     rubric_flag = os.path.join(rubric_dir, f"mem0_rubric_{safe_session_id}")
     rubric_already_shown = os.path.isfile(rubric_flag)
 
-    msg_count_file = os.path.join(tempfile.gettempdir(), f"mem0_msg_count_{user}")
+    msg_count_file = os.path.join(tempfile.gettempdir(), f"mem0_msg_count_{scope}")
     msg_count = 0
     if os.path.isfile(msg_count_file):
         try:
@@ -485,7 +491,7 @@ def cmd_user_prompt(input_data: dict) -> None:
         spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "auto_capture.py"), transcript_path], log_path=BACKGROUND_LOG_FILE, cwd=cwd)
 
     adds = 0
-    stats_file = os.path.join(tempfile.gettempdir(), f"mem0_session_stats_{user}.json")
+    stats_file = os.path.join(tempfile.gettempdir(), f"mem0_session_stats_{scope}.json")
     if os.path.isfile(stats_file):
         try:
             with open(stats_file, "r") as f:
@@ -509,13 +515,14 @@ def cmd_user_prompt(input_data: dict) -> None:
 
 def cmd_post_tool_use(input_data: dict) -> None:
     tool_name = input_data.get("tool_name", "")
+    cwd = input_data.get("cwd")
     if tool_name.endswith("__add_memory"):
         tool_input = input_data.get("tool_input", {})
         cat = tool_input.get("metadata", {}).get("type") or tool_input.get("metadata", {}).get("category") or ""
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "add", cat])
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "add", cat], cwd=cwd)
         spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "telemetry.py"), "tool_use", "--tool=add_memory"])
     elif tool_name.endswith("__search_memories") or tool_name.endswith("__get_memories"):
-        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "search"])
+        spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "session_stats.py"), "search"], cwd=cwd)
         spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "telemetry.py"), "tool_use", "--tool=search_memories"])
     elif tool_name.endswith("__delete_memory"):
         spawn_bg([sys.executable, os.path.join(SCRIPT_DIR, "telemetry.py"), "tool_use", "--tool=delete_memory"])

@@ -158,7 +158,12 @@ def main():
     project_id = resolve_project_id()
     branch = resolve_branch()
     session_id = ""
-    sid_file = f"/tmp/mem0_session_id_{os.environ.get('USER', 'default')}"
+    # Must match the same resolved user id + project _handlers.py's
+    # cmd_session_start() used to name this file -- raw $USER diverges from
+    # it whenever MEM0_USER_ID overrides the OS username, and an unscoped
+    # per-user (not per-project) key collides across concurrent sessions in
+    # different projects for the same user.
+    sid_file = f"/tmp/mem0_session_id_{user_id}_{project_id}"
     if os.path.isfile(sid_file):
         try:
             with open(sid_file) as f:

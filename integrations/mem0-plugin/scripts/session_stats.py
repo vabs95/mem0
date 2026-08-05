@@ -2,7 +2,9 @@
 """Session stats tracker for mem0 plugin.
 
 Tracks memory adds/searches per session.
-Uses /tmp/mem0_session_stats_$USER.json (single file per user, reset on init).
+Uses /tmp/mem0_session_stats_<user>_<project>.json -- scoped by both, not
+just $USER, so concurrent sessions in different projects for the same user
+don't share (and clobber) each other's counters.
 
 Usage:
   python session_stats.py init            # reset for new session
@@ -19,7 +21,20 @@ import sys
 import tempfile
 from datetime import datetime
 
-STATS_FILE = os.path.join(tempfile.gettempdir(), f"mem0_session_stats_{os.environ.get('USER', 'default')}.json")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
+from _identity import resolve_user_id  # noqa: E402
+from _project import resolve_project_id  # noqa: E402
+
+
+def _stats_file() -> str:
+    return os.path.join(
+        tempfile.gettempdir(), f"mem0_session_stats_{resolve_user_id()}_{resolve_project_id()}.json"
+    )
+
+
+STATS_FILE = _stats_file()
 
 
 def _load() -> dict:
