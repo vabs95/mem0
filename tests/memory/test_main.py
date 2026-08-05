@@ -1269,6 +1269,41 @@ class TestMemoryDream:
         assert res["memories_merged"] == 2
         assert memory.add.call_count == 1
 
+    def test_memory_dream_tags_synthesized_memory_with_project(self, mocker):
+        """The merged memory dream() writes must carry the project scope it
+        ran with, or it silently drops out of that project's memory set."""
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        mem1 = {"id": "m1", "memory": "Prefers Python", "status": "active", "importance": 8}
+        mem2 = {"id": "m2", "memory": "Prefers Python language", "status": "active", "importance": 6}
+        memory.get_all = MagicMock(return_value={"results": [mem1, mem2]})
+        memory.embedding_model.embed = MagicMock(return_value=[0.1, 0.2])
+
+        cand = SimpleNamespace(id="m2", score=0.95, payload=mem2)
+        memory.vector_store.search = MagicMock(return_value=[cand])
+        memory.add = MagicMock(return_value={"results": [{"id": "synth1"}]})
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        memory.dream(user_id="u1", project="proj-a")
+
+        _, kwargs = memory.add.call_args
+        assert kwargs["metadata"]["project"] == "proj-a"
+
+    def test_memory_dream_rejects_project_only_scope(self, mocker):
+        """A project alone can't own the synthesized memory dream() creates
+        for a merge cluster -- add() requires user_id/agent_id/run_id, so a
+        project-only call must fail the same fast pre-check rather than
+        crashing later once a merge cluster is actually found."""
+        _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        with pytest.raises(ValueError, match="At least one of"):
+            memory.dream(project="proj-a")
+
     def test_memory_dream_rejects_unscoped_call(self, mocker):
         """Without a scope, dream() would scan and merge across every
         tenant's memories -- must fail fast like delete_all() does, not

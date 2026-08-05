@@ -2107,11 +2107,17 @@ class Memory(MemoryBase):
     def dream(self, user_id=None, agent_id=None, run_id=None, project=None, similarity_threshold=0.90, limit=100):
         """Consolidate near-duplicate active memories within tenant scope into synthesized facts."""
         filters = {k: v for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items() if v}
-        if not filters:
+        if not any(k in filters for k in ("user_id", "agent_id", "run_id")):
+            # `project` alone isn't enough: the synthesized memory dream()
+            # writes for each merge cluster is created via add(), which (like
+            # every memory in this codebase) must be owned by a user/agent/run
+            # -- project is stored as metadata, not an identity key. Without
+            # this, a project-only call passes an empty-filters check but
+            # still crashes the moment a merge cluster is found.
             raise ValueError(
-                "At least one of 'user_id', 'agent_id', 'run_id', or 'project' is required to run "
-                "dream consolidation -- without a scope this would scan and merge memories across "
-                "every tenant."
+                "At least one of 'user_id', 'agent_id', or 'run_id' is required to run dream "
+                "consolidation -- 'project' alone cannot own the synthesized memories it creates. "
+                "Combine 'project' with a user_id/agent_id/run_id to narrow scope within a project."
             )
         if any(k in filters for k in ("user_id", "agent_id", "run_id")):
             memories = self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id, project=project, limit=limit)
@@ -2173,12 +2179,15 @@ class Memory(MemoryBase):
             importances = [c.get("importance", 5) for c in cluster if isinstance(c.get("importance"), (int, float))]
             avg_importance = int(round(sum(importances) / len(importances))) if importances else 6
 
+            synth_metadata = {"category": "auto_synthesis", "importance": avg_importance}
+            if project:
+                synth_metadata["project"] = project
             add_res = self.add(
                 [{"role": "user", "content": f"Consolidated memory: {combined_text}"}],
                 user_id=user_id,
                 agent_id=agent_id,
                 run_id=run_id,
-                metadata={"category": "auto_synthesis", "importance": avg_importance},
+                metadata=synth_metadata,
             )
             new_id = add_res.get("results", [{}])[0].get("id") if isinstance(add_res, dict) else None
             if new_id:
@@ -3970,11 +3979,12 @@ class AsyncMemory(MemoryBase):
     async def dream(self, user_id=None, agent_id=None, run_id=None, project=None, similarity_threshold=0.90, limit=100):
         """Consolidate near-duplicate active memories within tenant scope into synthesized facts asynchronously."""
         filters = {k: v for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items() if v}
-        if not filters:
+        if not any(k in filters for k in ("user_id", "agent_id", "run_id")):
+            # See sync Memory.dream() for why 'project' alone is not sufficient.
             raise ValueError(
-                "At least one of 'user_id', 'agent_id', 'run_id', or 'project' is required to run "
-                "dream consolidation -- without a scope this would scan and merge memories across "
-                "every tenant."
+                "At least one of 'user_id', 'agent_id', or 'run_id' is required to run dream "
+                "consolidation -- 'project' alone cannot own the synthesized memories it creates. "
+                "Combine 'project' with a user_id/agent_id/run_id to narrow scope within a project."
             )
         if any(k in filters for k in ("user_id", "agent_id", "run_id")):
             memories = await self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id, project=project, limit=limit)
@@ -4037,12 +4047,15 @@ class AsyncMemory(MemoryBase):
             importances = [c.get("importance", 5) for c in cluster if isinstance(c.get("importance"), (int, float))]
             avg_importance = int(round(sum(importances) / len(importances))) if importances else 6
 
+            synth_metadata = {"category": "auto_synthesis", "importance": avg_importance}
+            if project:
+                synth_metadata["project"] = project
             add_res = await self.add(
                 [{"role": "user", "content": f"Consolidated memory: {combined_text}"}],
                 user_id=user_id,
                 agent_id=agent_id,
                 run_id=run_id,
-                metadata={"category": "auto_synthesis", "importance": avg_importance},
+                metadata=synth_metadata,
             )
             new_id = add_res.get("results", [{}])[0].get("id") if isinstance(add_res, dict) else None
             if new_id:

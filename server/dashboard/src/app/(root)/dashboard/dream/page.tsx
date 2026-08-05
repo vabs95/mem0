@@ -48,7 +48,11 @@ export default function DreamPage() {
   const byType = (type: Entity["type"]) =>
     entities.filter((e) => e.type === type).map((e) => e.id).sort();
 
-  const hasScope = userId !== ALL_VALUES || projectId !== ALL_VALUES;
+  // 'project' alone can't own the synthesized memory dream() creates for a
+  // merge cluster -- the backend requires user_id/agent_id/run_id (project
+  // only narrows scope within that). This page only exposes a user selector,
+  // so that's the one required field.
+  const hasScope = userId !== ALL_VALUES;
 
   const handleTriggerDream = async () => {
     setConfirmOpen(false);
@@ -96,10 +100,12 @@ export default function DreamPage() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Select value={userId} onValueChange={setUserId}>
             <SelectTrigger>
-              <SelectValue placeholder="All users" />
+              <SelectValue placeholder="Select a user (required)" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={ALL_VALUES}>No user scope</SelectItem>
+              <SelectItem value={ALL_VALUES} disabled>
+                Select a user (required)
+              </SelectItem>
               {byType("user").map((id) => (
                 <SelectItem key={id} value={id}>
                   {id}
@@ -109,10 +115,10 @@ export default function DreamPage() {
           </Select>
           <Select value={projectId} onValueChange={setProjectId}>
             <SelectTrigger>
-              <SelectValue placeholder="All projects" />
+              <SelectValue placeholder="Narrow to a project (optional)" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={ALL_VALUES}>No project scope</SelectItem>
+              <SelectItem value={ALL_VALUES}>All projects for this user</SelectItem>
               {byType("project").map((id) => (
                 <SelectItem key={id} value={id}>
                   {id}
@@ -128,8 +134,9 @@ export default function DreamPage() {
         </div>
         {!hasScope && (
           <p className="text-xs text-onSurface-danger-primary">
-            Select at least a user or project scope -- Dream requires a scope so it never
-            consolidates across every tenant at once.
+            Select a user -- the synthesized memory Dream creates for each merge cluster needs an
+            owner, so a project alone isn&apos;t enough. Add a project too to narrow the scope
+            further within that user.
           </p>
         )}
 
