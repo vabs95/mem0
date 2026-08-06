@@ -2119,14 +2119,19 @@ class Memory(MemoryBase):
                 "consolidation -- 'project' alone cannot own the synthesized memories it creates. "
                 "Combine 'project' with a user_id/agent_id/run_id to narrow scope within a project."
             )
-        if any(k in filters for k in ("user_id", "agent_id", "run_id")):
-            # get_all() takes entity ids nested inside filters={} (and top_k=,
-            # not limit=) -- it explicitly rejects them as top-level kwargs.
-            memories = self.get_all(filters=filters, top_k=limit)
-            raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
-        else:
-            raw_list = self._get_all_from_vector_store(filters=filters, limit=limit)
-        active_memories = [m for m in raw_list if not _payload_is_superseded(m) and m.get("status") != "merged"]
+        # get_all() takes entity ids nested inside filters={} (and top_k=, not
+        # limit=) -- it explicitly rejects them as top-level kwargs. The
+        # ValueError guard above already ensures user_id/agent_id/run_id is
+        # present, so this is always the get_all() path.
+        memories = self.get_all(filters=filters, top_k=limit)
+        raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
+        # get_all()'s formatted output nests status under metadata, not
+        # top-level -- _payload_is_superseded() and the "merged" check below
+        # both read top-level keys, so check metadata.status here instead.
+        active_memories = [
+            m for m in raw_list
+            if not _payload_is_superseded(m) and (m.get("metadata") or {}).get("status") != "merged"
+        ]
 
         clusters = []
         visited = set()
@@ -2178,18 +2183,30 @@ class Memory(MemoryBase):
         for cluster in clusters:
             texts = [c.get("memory", "") for c in cluster if c.get("memory")]
             combined_text = " | ".join(texts)
-            importances = [c.get("importance", 5) for c in cluster if isinstance(c.get("importance"), (int, float))]
+            # importance lives under metadata in get_all()'s formatted output,
+            # not top-level -- c.get("importance") always missed it.
+            importances = [
+                (c.get("metadata") or {}).get("importance")
+                for c in cluster
+                if isinstance((c.get("metadata") or {}).get("importance"), (int, float))
+            ]
             avg_importance = int(round(sum(importances) / len(importances))) if importances else 6
 
             synth_metadata = {"category": "auto_synthesis", "importance": avg_importance}
             if project:
                 synth_metadata["project"] = project
+            # infer=False: combined_text is already a final, deterministic
+            # merge decision -- it must be stored verbatim, not fed back
+            # through the LLM extraction/dedup pipeline (which could re-split
+            # it, drop it as a duplicate/no-op, or leave it in an inconsistent
+            # state that isn't created via _create_memory).
             add_res = self.add(
-                [{"role": "user", "content": f"Consolidated memory: {combined_text}"}],
+                [{"role": "user", "content": combined_text}],
                 user_id=user_id,
                 agent_id=agent_id,
                 run_id=run_id,
                 metadata=synth_metadata,
+                infer=False,
             )
             new_id = add_res.get("results", [{}])[0].get("id") if isinstance(add_res, dict) else None
             if new_id:
@@ -2198,8 +2215,20 @@ class Memory(MemoryBase):
                     s_id = source_mem.get("id")
                     if not s_id:
                         continue
+                    # source_mem is get_all()'s formatted representation
+                    # ("memory" key, nested "metadata") -- not the vector
+                    # store's actual storage shape ("data" key, flat fields).
+                    # Writing it straight to vector_store.update() would
+                    # overwrite the real payload and permanently blank out
+                    # the memory's content. Fetch the raw payload first, the
+                    # same way _supersede_contradictions() does via
+                    # candidate.payload.
+                    raw = self.vector_store.get(vector_id=s_id)
+                    if not raw or not raw.payload:
+                        logger.warning(f"Skipping merge-mark for {s_id}: raw payload not found")
+                        continue
                     merged_source_ids.append(s_id)
-                    updated_payload = deepcopy(source_mem)
+                    updated_payload = deepcopy(raw.payload)
                     updated_payload["status"] = "merged"
                     updated_payload["merged_into_id"] = new_id
                     updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -3988,14 +4017,19 @@ class AsyncMemory(MemoryBase):
                 "consolidation -- 'project' alone cannot own the synthesized memories it creates. "
                 "Combine 'project' with a user_id/agent_id/run_id to narrow scope within a project."
             )
-        if any(k in filters for k in ("user_id", "agent_id", "run_id")):
-            # get_all() takes entity ids nested inside filters={} (and top_k=,
-            # not limit=) -- it explicitly rejects them as top-level kwargs.
-            memories = await self.get_all(filters=filters, top_k=limit)
-            raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
-        else:
-            raw_list = await asyncio.to_thread(self._get_all_from_vector_store, filters=filters, limit=limit)
-        active_memories = [m for m in raw_list if not _payload_is_superseded(m) and m.get("status") != "merged"]
+        # get_all() takes entity ids nested inside filters={} (and top_k=, not
+        # limit=) -- it explicitly rejects them as top-level kwargs. The
+        # ValueError guard above already ensures user_id/agent_id/run_id is
+        # present, so this is always the get_all() path.
+        memories = await self.get_all(filters=filters, top_k=limit)
+        raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
+        # get_all()'s formatted output nests status under metadata, not
+        # top-level -- _payload_is_superseded() and the "merged" check below
+        # both read top-level keys, so check metadata.status here instead.
+        active_memories = [
+            m for m in raw_list
+            if not _payload_is_superseded(m) and (m.get("metadata") or {}).get("status") != "merged"
+        ]
 
         clusters = []
         visited = set()
@@ -4048,18 +4082,28 @@ class AsyncMemory(MemoryBase):
         for cluster in clusters:
             texts = [c.get("memory", "") for c in cluster if c.get("memory")]
             combined_text = " | ".join(texts)
-            importances = [c.get("importance", 5) for c in cluster if isinstance(c.get("importance"), (int, float))]
+            # importance lives under metadata in get_all()'s formatted output,
+            # not top-level -- c.get("importance") always missed it.
+            importances = [
+                (c.get("metadata") or {}).get("importance")
+                for c in cluster
+                if isinstance((c.get("metadata") or {}).get("importance"), (int, float))
+            ]
             avg_importance = int(round(sum(importances) / len(importances))) if importances else 6
 
             synth_metadata = {"category": "auto_synthesis", "importance": avg_importance}
             if project:
                 synth_metadata["project"] = project
+            # infer=False: combined_text is already a final, deterministic
+            # merge decision -- it must be stored verbatim, not fed back
+            # through the LLM extraction/dedup pipeline.
             add_res = await self.add(
-                [{"role": "user", "content": f"Consolidated memory: {combined_text}"}],
+                [{"role": "user", "content": combined_text}],
                 user_id=user_id,
                 agent_id=agent_id,
                 run_id=run_id,
                 metadata=synth_metadata,
+                infer=False,
             )
             new_id = add_res.get("results", [{}])[0].get("id") if isinstance(add_res, dict) else None
             if new_id:
@@ -4068,8 +4112,15 @@ class AsyncMemory(MemoryBase):
                     s_id = source_mem.get("id")
                     if not s_id:
                         continue
+                    # source_mem is get_all()'s formatted representation, not
+                    # the vector store's raw storage shape -- see sync
+                    # Memory.dream() for why this must be re-fetched raw.
+                    raw = await asyncio.to_thread(self.vector_store.get, vector_id=s_id)
+                    if not raw or not raw.payload:
+                        logger.warning(f"Skipping merge-mark for {s_id}: raw payload not found")
+                        continue
                     merged_source_ids.append(s_id)
-                    updated_payload = deepcopy(source_mem)
+                    updated_payload = deepcopy(raw.payload)
                     updated_payload["status"] = "merged"
                     updated_payload["merged_into_id"] = new_id
                     updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
