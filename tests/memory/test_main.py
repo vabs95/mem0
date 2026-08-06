@@ -1269,6 +1269,19 @@ class TestMemoryDream:
         assert res["memories_merged"] == 2
         assert memory.add.call_count == 1
 
+        # get_all() is keyword-only and explicitly rejects user_id/agent_id/
+        # run_id/limit as top-level kwargs (it wants filters={...}, top_k=) --
+        # assert the real calling convention so a regression back to the old
+        # broken call (caught live: dream() 400'd immediately with "Top-level
+        # entity parameters ... are not supported in get_all()") fails loudly
+        # here instead of only in production, since get_all is mocked above
+        # and would silently accept any kwargs.
+        _, get_all_kwargs = memory.get_all.call_args
+        assert get_all_kwargs.get("filters") == {"user_id": "u1"}
+        assert get_all_kwargs.get("top_k") == 100
+        assert "user_id" not in get_all_kwargs
+        assert "limit" not in get_all_kwargs
+
     def test_memory_dream_tags_synthesized_memory_with_project(self, mocker):
         """The merged memory dream() writes must carry the project scope it
         ran with, or it silently drops out of that project's memory set."""
@@ -1315,5 +1328,28 @@ class TestMemoryDream:
         with pytest.raises(ValueError, match="At least one of"):
             memory.dream()
 
+    @pytest.mark.asyncio
+    async def test_async_memory_dream_calls_get_all_with_correct_signature(self, mocker):
+        """AsyncMemory.dream() had the identical bug as the sync version:
+        calling get_all(user_id=..., limit=...) instead of
+        get_all(filters={...}, top_k=...). Assert the real calling
+        convention directly since get_all is mocked here."""
+        _setup_mocks(mocker)
+        memory = AsyncMemory()
+        memory.config = mocker.MagicMock()
+
+        mem1 = {"id": "m1", "memory": "Prefers Python", "status": "active", "importance": 8}
+        memory.get_all = mocker.AsyncMock(return_value={"results": [mem1]})
+        memory.embedding_model.aembed = mocker.AsyncMock(return_value=[0.1, 0.2])
+        memory.vector_store.search = MagicMock(return_value=[])
+        memory.add = mocker.AsyncMock(return_value={"results": [{"id": "synth1"}]})
+
+        await memory.dream(user_id="u1")
+
+        _, get_all_kwargs = memory.get_all.call_args
+        assert get_all_kwargs.get("filters") == {"user_id": "u1"}
+        assert get_all_kwargs.get("top_k") == 100
+        assert "user_id" not in get_all_kwargs
+        assert "limit" not in get_all_kwargs
 
 

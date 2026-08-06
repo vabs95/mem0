@@ -2120,7 +2120,9 @@ class Memory(MemoryBase):
                 "Combine 'project' with a user_id/agent_id/run_id to narrow scope within a project."
             )
         if any(k in filters for k in ("user_id", "agent_id", "run_id")):
-            memories = self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id, project=project, limit=limit)
+            # get_all() takes entity ids nested inside filters={} (and top_k=,
+            # not limit=) -- it explicitly rejects them as top-level kwargs.
+            memories = self.get_all(filters=filters, top_k=limit)
             raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
         else:
             raw_list = self._get_all_from_vector_store(filters=filters, limit=limit)
@@ -3987,7 +3989,9 @@ class AsyncMemory(MemoryBase):
                 "Combine 'project' with a user_id/agent_id/run_id to narrow scope within a project."
             )
         if any(k in filters for k in ("user_id", "agent_id", "run_id")):
-            memories = await self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id, project=project, limit=limit)
+            # get_all() takes entity ids nested inside filters={} (and top_k=,
+            # not limit=) -- it explicitly rejects them as top-level kwargs.
+            memories = await self.get_all(filters=filters, top_k=limit)
             raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
         else:
             raw_list = await asyncio.to_thread(self._get_all_from_vector_store, filters=filters, limit=limit)
