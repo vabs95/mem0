@@ -40,6 +40,37 @@ from _project import resolve_branch, resolve_project_id  # noqa: E402
 from _search import format_results_for_context, search_memories, should_rerank  # noqa: E402
 
 
+# Lines that are clearly source code declaring/handling an exception type,
+# not an actual error being reported. Raw substring counting of "Error:"/
+# "Exception:" without this filter treats `except Exception:` or
+# `class FooException:` appearing in a `sed`/`rg`/`cat` dump of source code
+# as if it were real error output -- caught live: reading a Python file
+# with a couple of try/except blocks tripped "Error detected in command
+# output" even though nothing had failed.
+_SOURCE_CODE_LINE_RE = re.compile(
+    r'^\s*(except\b|raise\b|class\s+\w+.*Exception|catch\s*[({]|#|//|\*|"""|\'\'\')'
+)
+
+# grep/rg prefix each line with "path:lineno:" (match) or "path-lineno-"
+# (context) -- strip it before checking for source-code shape, or every
+# `rg -n`/`rg -C` dump of a file with try/except blocks defeats the filter
+# above since "except" no longer starts the line.
+_GREP_PREFIX_RE = re.compile(r'^\S+?[:-]\d+[:-]\s*')
+
+
+def _count_error_signals(text: str) -> int:
+    """Count lines that look like real error/exception output, skipping
+    lines that are just source code mentioning "Error:"/"Exception:"."""
+    count = 0
+    for line in text.splitlines():
+        stripped = _GREP_PREFIX_RE.sub('', line, count=1)
+        if _SOURCE_CODE_LINE_RE.match(stripped):
+            continue
+        if re.search(r'(Error:|Exception:|FAIL:)', stripped):
+            count += 1
+    return count
+
+
 def _dedupe_by_id(*result_lists: list[dict]) -> list[dict]:
     seen: set[str] = set()
     combined: list[dict] = []
@@ -415,7 +446,7 @@ def cmd_user_prompt(input_data: dict) -> None:
         has_error = True
     elif re.search(r'^\s*fatal: ', prompt, re.MULTILINE):
         has_error = True
-    elif len(re.findall(r'(Error:|Exception:|FAIL:)', prompt)) >= 2:
+    elif _count_error_signals(prompt) >= 2:
         has_error = True
 
     file_paths = re.findall(r'([a-zA-Z0-9_./-]+\.(?:py|ts|tsx|js|jsx|rs|go|rb|java|sh|yaml|yml|json|toml|md|sql|css|html))\b', prompt)
@@ -581,7 +612,7 @@ def cmd_on_bash_output(input_data: dict) -> None:
     has_error = False
     if re.search(r'(Traceback \(most recent call last\)|panic: |FATAL:|error\[E[0-9]+\])', tool_response):
         has_error = True
-    elif len(re.findall(r'(Error:|Exception:)', tool_response)) >= 2:
+    elif _count_error_signals(tool_response) >= 2:
         has_error = True
 
     if not has_error:
@@ -589,7 +620,10 @@ def cmd_on_bash_output(input_data: dict) -> None:
 
     error_line = ""
     for line in tool_response.splitlines():
-        if re.search(r'(Error:|Exception:|panic:|FAIL:|fatal:)', line, re.IGNORECASE):
+        stripped_line = _GREP_PREFIX_RE.sub('', line, count=1)
+        if _SOURCE_CODE_LINE_RE.match(stripped_line):
+            continue
+        if re.search(r'(Error:|Exception:|panic:|FAIL:|fatal:)', stripped_line, re.IGNORECASE):
             error_line = line.strip()[:120]
             break
 
