@@ -17,6 +17,7 @@
     "semantic-search"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
   "mcpServers": "./.codex-mcp.json",
   "interface": {
     "displayName": "Mem0",
