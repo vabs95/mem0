@@ -5,6 +5,7 @@ import { format, formatDistanceToNow, isSameDay, subDays } from "date-fns";
 import {
   Archive,
   BrainCircuit,
+  ChevronDown,
   Circle,
   LogIn,
   LogOut,
@@ -31,7 +32,11 @@ import { api } from "@/utils/api";
 import { ENTITY_ENDPOINTS, TIMELINE_ENDPOINTS } from "@/utils/api-endpoints";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { Entity, TimelineEvent } from "@/types/api";
-import { DateRangePicker, DateRangeSelection } from "@/components/shared/date-range-picker";
+import {
+  DateRangePicker,
+  DateRangeSelection,
+} from "@/components/shared/date-range-picker";
+import { MemoryLinkDialog } from "./memory-link-dialog";
 
 const EVENT_LIMIT = 150;
 const ALL_PROJECTS = "__all__";
@@ -75,17 +80,16 @@ const EVENT_META: Record<string, { icon: typeof Circle; className: string }> = {
   },
   stop: {
     icon: LogOut,
-    className:
-      "bg-surface-default-secondary text-onSurface-default-secondary",
+    className: "bg-surface-default-secondary text-onSurface-default-secondary",
   },
   delete_all: {
     icon: Trash2,
-    className: "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300",
+    className:
+      "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300",
   },
   pre_compact: {
     icon: Archive,
-    className:
-      "bg-surface-default-secondary text-onSurface-default-secondary",
+    className: "bg-surface-default-secondary text-onSurface-default-secondary",
   },
 };
 
@@ -112,13 +116,40 @@ const dayLabel = (dateStr: string): string => {
   return format(date, "EEEE, MMM d");
 };
 
+const PAYLOAD_LABELS: Record<string, string> = {
+  query: "Query",
+  result_count: "Results",
+  command: "Command",
+};
+
+const formatPayloadEntries = (
+  payload: Record<string, unknown> | null | undefined,
+): [string, string][] => {
+  if (!payload) return [];
+  return Object.entries(payload)
+    .filter(
+      ([, value]) => value !== null && value !== undefined && value !== "",
+    )
+    .map(([key, value]) => [
+      PAYLOAD_LABELS[key] ?? key.replace(/_/g, " "),
+      String(value),
+    ]);
+};
+
 export default function TimelinePage() {
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string>(ALL_PROJECTS);
-  const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES);
+  const [selectedCategory, setSelectedCategory] =
+    useState<string>(ALL_CATEGORIES);
   const [selectedEventType, setSelectedEventType] = useState<string>("__all__");
-  const [dateRange, setDateRange] = useState<DateRangeSelection>({ mode: "preset", key: "all" });
+  const [dateRange, setDateRange] = useState<DateRangeSelection>({
+    mode: "preset",
+    key: "all",
+  });
   const [search, setSearch] = useState("");
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
+  const [memoryDialogEvent, setMemoryDialogEvent] =
+    useState<TimelineEvent | null>(null);
 
   const { data: projects = [] } = useApiQuery<string[]>(
     async () => {
@@ -141,14 +172,20 @@ export default function TimelinePage() {
         dateRange.mode === "custom"
           ? dateRange.from.toISOString()
           : DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES].days
-            ? subDays(new Date(), DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES].days!).toISOString()
+            ? subDays(
+                new Date(),
+                DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES].days!,
+              ).toISOString()
             : undefined;
       const res = await api.get<TimelineEvent[]>(TIMELINE_ENDPOINTS.EVENTS, {
         params: {
           limit: EVENT_LIMIT,
-          project: selectedProject === ALL_PROJECTS ? undefined : selectedProject,
-          category: selectedCategory === ALL_CATEGORIES ? undefined : selectedCategory,
-          event_type: selectedEventType === "__all__" ? undefined : selectedEventType,
+          project:
+            selectedProject === ALL_PROJECTS ? undefined : selectedProject,
+          category:
+            selectedCategory === ALL_CATEGORIES ? undefined : selectedCategory,
+          event_type:
+            selectedEventType === "__all__" ? undefined : selectedEventType,
           since,
         },
       });
@@ -172,9 +209,17 @@ export default function TimelinePage() {
   const filteredEvents = useMemo(() => {
     const query = search.trim().toLowerCase();
     return events.filter((e) => {
-      if (dateRange.mode === "custom" && new Date(e.created_at) > dateRange.to) return false;
+      if (dateRange.mode === "custom" && new Date(e.created_at) > dateRange.to)
+        return false;
       if (!query) return true;
-      const haystack = [e.summary, e.source_agent, e.user_id, e.agent_id, e.project, e.run_id]
+      const haystack = [
+        e.summary,
+        e.source_agent,
+        e.user_id,
+        e.agent_id,
+        e.project,
+        e.run_id,
+      ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
@@ -213,7 +258,11 @@ export default function TimelinePage() {
             </p>
           )}
         </div>
-        <Button variant="outline" onClick={() => void refetch()} disabled={isLoading}>
+        <Button
+          variant="outline"
+          onClick={() => void refetch()}
+          disabled={isLoading}
+        >
           <RefreshCw className="size-4 mr-2" />
           Refresh
         </Button>
@@ -256,7 +305,12 @@ export default function TimelinePage() {
               ))}
             </SelectContent>
           </Select>
-          <DateRangePicker presets={DATE_RANGES} value={dateRange} onChange={setDateRange} className="w-[180px]" />
+          <DateRangePicker
+            presets={DATE_RANGES}
+            value={dateRange}
+            onChange={setDateRange}
+            className="w-[180px]"
+          />
           {hasActiveFilters && (
             <Button variant="ghost" size="sm" onClick={clearFilters}>
               Clear filters
@@ -305,7 +359,12 @@ export default function TimelinePage() {
           }
         >
           {hasActiveFilters && (
-            <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              onClick={clearFilters}
+            >
               Clear filters
             </Button>
           )}
@@ -318,8 +377,13 @@ export default function TimelinePage() {
               const Icon = meta.icon;
               const showDaySeparator =
                 index === 0 ||
-                !isSameDay(new Date(event.created_at), new Date(filteredEvents[index - 1].created_at));
+                !isSameDay(
+                  new Date(event.created_at),
+                  new Date(filteredEvents[index - 1].created_at),
+                );
               const scope = scopeLabel(event);
+              const isExpanded = expandedEventId === event.id;
+              const payloadEntries = formatPayloadEntries(event.payload);
 
               return (
                 <div key={event.id}>
@@ -328,7 +392,24 @@ export default function TimelinePage() {
                       {dayLabel(event.created_at)}
                     </div>
                   )}
-                  <div className="flex items-start gap-3 px-4 py-3 hover:bg-surface-default-secondary/40 transition-colors">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() =>
+                      setExpandedEventId((prev) =>
+                        prev === event.id ? null : event.id,
+                      )
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setExpandedEventId((prev) =>
+                          prev === event.id ? null : event.id,
+                        );
+                      }
+                    }}
+                    className="flex items-start gap-3 px-4 py-3 hover:bg-surface-default-secondary/40 transition-colors cursor-pointer"
+                  >
                     <div
                       className={cn(
                         "flex size-8 shrink-0 items-center justify-center rounded-full",
@@ -339,40 +420,101 @@ export default function TimelinePage() {
                       <Icon className="size-4" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-onSurface-default-primary line-clamp-2">
+                      <p
+                        className={cn(
+                          "text-sm text-onSurface-default-primary",
+                          !isExpanded && "line-clamp-2",
+                        )}
+                      >
                         {event.summary || (
                           <span className="text-onSurface-default-tertiary italic">
                             {event.event_type.replace(/_/g, " ")}
                           </span>
                         )}
                       </p>
+                      {isExpanded && payloadEntries.length > 0 && (
+                        <div className="mt-2 space-y-1 rounded-md border border-memBorder-primary bg-surface-default-secondary/40 p-2 text-xs">
+                          {payloadEntries.map(([label, value]) => (
+                            <div key={label} className="flex gap-2">
+                              <span className="font-medium text-onSurface-default-secondary shrink-0">
+                                {label}:
+                              </span>
+                              <span className="text-onSurface-default-tertiary break-all">
+                                {value}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-onSurface-default-tertiary">
-                        <span title={format(new Date(event.created_at), "PPpp")}>
-                          {formatDistanceToNow(new Date(event.created_at), { addSuffix: true })}
+                        <span
+                          title={format(new Date(event.created_at), "PPpp")}
+                        >
+                          {formatDistanceToNow(new Date(event.created_at), {
+                            addSuffix: true,
+                          })}
                         </span>
                         <span>·</span>
-                        <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">
+                        <Badge
+                          variant="outline"
+                          className="px-1.5 py-0 text-[10px] capitalize"
+                        >
                           {event.source_agent}
                         </Badge>
                         {event.category && (
-                          <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">
+                          <Badge
+                            variant="outline"
+                            className="px-1.5 py-0 text-[10px] capitalize"
+                          >
                             {event.category.replace(/_/g, " ")}
                           </Badge>
                         )}
                         {event.memory_ids.length > 0 && (
-                          <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-                            → {event.memory_ids.length} memor{event.memory_ids.length === 1 ? "y" : "ies"}
-                          </Badge>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMemoryDialogEvent(event);
+                            }}
+                            className="inline-flex"
+                          >
+                            <Badge
+                              variant="outline"
+                              className="px-1.5 py-0 text-[10px] hover:bg-surface-default-secondary cursor-pointer"
+                            >
+                              → {event.memory_ids.length} memor
+                              {event.memory_ids.length === 1 ? "y" : "ies"}
+                            </Badge>
+                          </button>
                         )}
-                        {scope && <span className="font-mono truncate">{scope}</span>}
+                        {scope && (
+                          <span className="font-mono truncate">{scope}</span>
+                        )}
                       </div>
                     </div>
+                    <ChevronDown
+                      className={cn(
+                        "size-4 shrink-0 mt-1 text-onSurface-default-tertiary transition-transform",
+                        isExpanded && "rotate-180",
+                      )}
+                    />
                   </div>
                 </div>
               );
             })}
           </div>
         </Card>
+      )}
+
+      {memoryDialogEvent && (
+        <MemoryLinkDialog
+          key={memoryDialogEvent.id}
+          memoryIds={memoryDialogEvent.memory_ids}
+          open
+          onOpenChange={(open) => {
+            if (!open) setMemoryDialogEvent(null);
+          }}
+        />
       )}
     </div>
   );
