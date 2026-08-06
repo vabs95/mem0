@@ -66,6 +66,23 @@ export interface MemoryExport {
   completed_at?: string | null;
 }
 
+export interface DreamRun {
+  id: string;
+  user_id?: string | null;
+  agent_id?: string | null;
+  run_id?: string | null;
+  project?: string | null;
+  similarity_threshold: number;
+  status: "running" | "completed" | "failed" | string;
+  processed: number;
+  clusters_merged: number;
+  new_memories_created: number;
+  memories_merged: number;
+  error?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+}
+
 export interface TimelineEvent {
   id: string;
   event_type: string;

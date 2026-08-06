@@ -2,10 +2,12 @@ import asyncio
 import logging
 import os
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import telemetry
-from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, verify_auth
+from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, require_auth, verify_auth
 from db import SessionLocal
 from dotenv import load_dotenv
 from errors import (
@@ -16,10 +18,10 @@ from errors import (
     upstream_error,
     upstream_error_handler,
 )
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
-from models import RequestLog, User
+from models import DreamRun, RequestLog, User
 from pydantic import BaseModel, Field
 from rate_limit import limiter
 from routers import api_keys as api_keys_router
@@ -39,6 +41,7 @@ from server_state import (
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from mem0.exceptions import ValidationError as Mem0ValidationError
 
@@ -221,6 +224,25 @@ class DreamRequest(BaseModel):
     project: Optional[str] = None
     similarity_threshold: Optional[float] = Field(0.90, description="Minimum vector similarity for clustering near-duplicates.")
     limit: Optional[int] = Field(100, description="Maximum active memories to process during dream consolidation.")
+
+
+class DreamRunItem(BaseModel):
+    id: uuid.UUID
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    run_id: Optional[str] = None
+    project: Optional[str] = None
+    similarity_threshold: float
+    status: str
+    processed: int
+    clusters_merged: int
+    new_memories_created: int
+    memories_merged: int
+    error: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
 
 
 class GenerateInstructionsRequest(BaseModel):
@@ -515,22 +537,108 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
         raise upstream_error()
 
 
-@app.post("/memories/dream", summary="Consolidate memories (Dream)")
-def dream_memories(dream_req: DreamRequest, _auth=Depends(verify_auth)):
-    """Consolidate near-duplicate memories and synthesize facts (Dream)."""
+def _run_dream_background(run_id: uuid.UUID, params: dict) -> None:
+    """Executes the actual Memory.dream() call outside the request/response
+    cycle, then updates the DreamRun row with the outcome. Runs in its own
+    short-lived DB session (BackgroundTasks run after the response is sent,
+    so the request-scoped session is already closed by then)."""
     try:
-        return get_memory_instance().dream(
-            user_id=dream_req.user_id,
-            agent_id=dream_req.agent_id,
-            run_id=dream_req.run_id,
-            project=dream_req.project,
-            similarity_threshold=dream_req.similarity_threshold or 0.90,
-            limit=dream_req.limit or 100,
+        result = get_memory_instance().dream(**params)
+        with SessionLocal() as db:
+            run = db.get(DreamRun, run_id)
+            if run is None:
+                return
+            run.status = "completed"
+            run.processed = result.get("processed", 0)
+            run.clusters_merged = result.get("clusters_merged", 0)
+            run.new_memories_created = result.get("new_memories_created", 0)
+            run.memories_merged = result.get("memories_merged", 0)
+            run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+    except Exception as exc:
+        logging.exception(f"Dream run {run_id} failed")
+        with SessionLocal() as db:
+            run = db.get(DreamRun, run_id)
+            if run is None:
+                return
+            run.status = "failed"
+            run.error = str(exc)
+            run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+
+
+@app.post("/memories/dream", summary="Consolidate memories (Dream)", status_code=202, response_model=DreamRunItem)
+def dream_memories(dream_req: DreamRequest, background_tasks: BackgroundTasks, user: User = Depends(require_auth)):
+    """Kick off a Dream consolidation run as a background task and return
+    immediately. Poll GET /memories/dream/runs/{id} (or list via
+    GET /memories/dream/runs) for progress -- this can take a while for a
+    large scope, so the caller isn't blocked waiting for it to finish."""
+    # Mirrors the same fast pre-check Memory.dream() itself raises on, so a
+    # bad request 400s immediately instead of "succeeding" into a run record
+    # that would just fail a moment later in the background.
+    if not (dream_req.user_id or dream_req.agent_id or dream_req.run_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "At least one of 'user_id', 'agent_id', or 'run_id' is required to run dream "
+                "consolidation -- 'project' alone cannot own the synthesized memories it creates."
+            ),
         )
-    except (ValueError, Mem0ValidationError) as e:
-        raise _client_error(e)
-    except Exception:
-        raise upstream_error()
+
+    similarity_threshold = dream_req.similarity_threshold or 0.90
+    limit = dream_req.limit or 100
+    run = DreamRun(
+        requested_by=user.id,
+        user_id=dream_req.user_id,
+        agent_id=dream_req.agent_id,
+        run_id=dream_req.run_id,
+        project=dream_req.project,
+        similarity_threshold=similarity_threshold,
+        status="running",
+    )
+    with SessionLocal() as db:
+        db.add(run)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="A Dream run is already in progress for this scope -- wait for it to finish before starting another.",
+            )
+        db.refresh(run)
+        run_id = run.id
+        response = DreamRunItem.model_validate(run)
+
+    background_tasks.add_task(
+        _run_dream_background,
+        run_id,
+        {
+            "user_id": dream_req.user_id,
+            "agent_id": dream_req.agent_id,
+            "run_id": dream_req.run_id,
+            "project": dream_req.project,
+            "similarity_threshold": similarity_threshold,
+            "limit": limit,
+        },
+    )
+    return response
+
+
+@app.get("/memories/dream/runs", summary="List Dream run history", response_model=List[DreamRunItem])
+def list_dream_runs(_auth=Depends(verify_auth), limit: int = Query(default=50, ge=1, le=200)):
+    with SessionLocal() as db:
+        stmt = select(DreamRun).order_by(DreamRun.created_at.desc()).limit(limit)
+        return db.execute(stmt).scalars().all()
+
+
+@app.get("/memories/dream/runs/{run_id}", summary="Get a Dream run's status", response_model=DreamRunItem)
+def get_dream_run(run_id: uuid.UUID, _auth=Depends(verify_auth)):
+    with SessionLocal() as db:
+        run = db.get(DreamRun, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Dream run not found.")
+        return run
 
 
 @app.put("/memories/{memory_id}", summary="Update a memory")

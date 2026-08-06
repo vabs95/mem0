@@ -4,6 +4,7 @@ import contextvars
 import json
 import logging
 import os
+import time
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -21,6 +22,14 @@ logger = logging.getLogger("mem0_mcp_bridge")
 # ---------------------------------------------------------------------------
 DEFAULT_USER_ID = os.environ.get("MEM0_DEFAULT_USER_ID", "mem0-mcp")
 DEFAULT_AGENT_ID = os.environ.get("MEM0_DEFAULT_AGENT_ID", "")
+
+# POST /memories/dream returns immediately with a "running" DreamRun instead
+# of the final result (it runs as a background job server-side) -- these
+# bound how long dream_consolidate polls GET /memories/dream/runs/{id}
+# before giving up, so the tool still feels like a single synchronous call
+# to the calling agent.
+DREAM_POLL_INTERVAL_SECONDS = float(os.environ.get("MEM0_DREAM_POLL_INTERVAL_SECONDS", "2"))
+DREAM_POLL_TIMEOUT_SECONDS = float(os.environ.get("MEM0_DREAM_POLL_TIMEOUT_SECONDS", "120"))
 
 # ---------------------------------------------------------------------------
 # Context variables – populated per-request by ASGI middleware
@@ -293,11 +302,33 @@ def delete_all_memories(
     return _json_call(_client().request, "DELETE", "/memories", params=params)
 
 
+def _dream_consolidate_and_wait(payload: dict[str, Any]) -> dict[str, Any]:
+    """POST /memories/dream returns immediately with status="running" (it
+    runs as a background job server-side, per the dashboard's async Dream
+    flow) -- poll GET /memories/dream/runs/{id} until it settles so this
+    still behaves like a single synchronous tool call from the agent's
+    perspective. Returns whatever the last poll saw, including a
+    still-"running" result if the timeout is hit (the caller can inspect
+    run_id and check back later via the same run id)."""
+    created = _client().request("POST", "/memories/dream", json_body=payload)
+    run_id = created.get("id") if isinstance(created, dict) else None
+    if not run_id or created.get("status") != "running":
+        return created
+
+    deadline = time.monotonic() + DREAM_POLL_TIMEOUT_SECONDS
+    status = created
+    while status.get("status") == "running" and time.monotonic() < deadline:
+        time.sleep(DREAM_POLL_INTERVAL_SECONDS)
+        status = _client().request("GET", f"/memories/dream/runs/{run_id}")
+    return status
+
+
 @server.tool(
     description=(
         "Run Dream consolidation: clusters near-duplicate active memories within a scope "
         "and merges them into synthesized memories. Use sparingly -- this is a bulk write "
-        "operation, not a read."
+        "operation, not a read. May take a while for a large scope; this call waits for it "
+        "to finish (or times out and returns the run id to check later)."
     )
 )
 def dream_consolidate(
@@ -322,7 +353,7 @@ def dream_consolidate(
         "limit": limit,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
-    return _json_call(_client().request, "POST", "/memories/dream", json_body=payload)
+    return _json_call(_dream_consolidate_and_wait, payload)
 
 
 @server.tool(description="List users, agents, runs, and projects currently holding memories.")

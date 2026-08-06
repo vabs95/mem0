@@ -13,7 +13,7 @@ if MCP_DIR not in sys.path:
 pytest.importorskip("mcp", reason="mcp not installed (see server/mcp/requirements.txt)")
 
 from mem0_mcp_bridge.client import build_filters  # noqa: E402
-from mem0_mcp_bridge.server import _effective_project, add_memory  # noqa: E402
+from mem0_mcp_bridge.server import _dream_consolidate_and_wait, _effective_project, add_memory  # noqa: E402
 
 
 def test_effective_project_prefers_explicit_project():
@@ -122,3 +122,55 @@ def test_add_memory_merges_importance_and_category_into_metadata(monkeypatch):
     assert captured["path"] == "/memories"
     assert captured["json_body"]["metadata"]["importance"] == 8
     assert captured["json_body"]["metadata"]["category"] == "preference"
+
+
+def test_dream_consolidate_polls_until_run_completes(monkeypatch):
+    """POST /memories/dream now returns immediately with status="running"
+    (it's a background job server-side) -- the MCP tool must poll the run
+    status endpoint until it settles, not just relay the initial "running"
+    response back to the agent."""
+    from mem0_mcp_bridge import server as server_module
+
+    monkeypatch.setattr(server_module, "DREAM_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(server_module, "time", type("T", (), {"monotonic": staticmethod(lambda: 0.0), "sleep": staticmethod(lambda _: None)}))
+
+    calls = []
+    poll_responses = iter(
+        [
+            {"id": "run-1", "status": "running"},
+            {"id": "run-1", "status": "running"},
+            {"id": "run-1", "status": "completed", "memories_merged": 4},
+        ]
+    )
+
+    def fake_request(method, path, *, json_body=None, params=None):
+        calls.append((method, path))
+        if method == "POST":
+            return {"id": "run-1", "status": "running"}
+        return next(poll_responses)
+
+    monkeypatch.setattr(server_module, "_client", lambda: type("C", (), {"request": staticmethod(fake_request)})())
+    result = _dream_consolidate_and_wait({"user_id": "demo-user"})
+
+    assert result == {"id": "run-1", "status": "completed", "memories_merged": 4}
+    assert calls[0] == ("POST", "/memories/dream")
+    assert calls.count(("GET", "/memories/dream/runs/run-1")) == 3
+
+
+def test_dream_consolidate_returns_immediately_if_already_settled(monkeypatch):
+    """A run that completes synchronously fast enough to already be
+    non-"running" on the initial POST response shouldn't trigger any polling."""
+    from mem0_mcp_bridge import server as server_module
+
+    calls = []
+
+    def fake_request(method, path, *, json_body=None, params=None):
+        calls.append((method, path))
+        return {"id": "run-1", "status": "completed", "memories_merged": 0}
+
+    monkeypatch.setattr(server_module, "_client", lambda: type("C", (), {"request": staticmethod(fake_request)})())
+
+    result = _dream_consolidate_and_wait({"user_id": "demo-user"})
+
+    assert result["status"] == "completed"
+    assert calls == [("POST", "/memories/dream")]

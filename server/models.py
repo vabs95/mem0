@@ -122,6 +122,38 @@ class MemoryExport(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class DreamRun(Base):
+    """A Dream memory-consolidation run, executed as a FastAPI BackgroundTask.
+
+    `status` starts at "running" the moment the row is inserted (before the
+    background task starts) and is updated to "completed"/"failed" once the
+    task finishes -- this is what the dashboard polls to show live progress
+    and keep history across refreshes, and what the per-scope unique index
+    (see migration 010) uses to block a second concurrent run over the same
+    scope.
+    """
+
+    __tablename__ = "dream_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    project: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    similarity_threshold: Mapped[float] = mapped_column(Float, default=0.90)
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    processed: Mapped[int] = mapped_column(Integer, default=0)
+    clusters_merged: Mapped[int] = mapped_column(Integer, default=0)
+    new_memories_created: Mapped[int] = mapped_column(Integer, default=0)
+    memories_merged: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Settings(Base):
     __tablename__ = "settings"
 
