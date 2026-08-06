@@ -164,6 +164,7 @@ def store_memory(api_key: str, content: str, user_id: str, source: str, session_
         "type": "session_state",
         "source": source,
         "session_id": session_id,
+        "importance": 5,
     }
     if branch:
         metadata["branch"] = branch

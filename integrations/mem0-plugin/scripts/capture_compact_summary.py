@@ -101,6 +101,7 @@ def store_summary(api_key: str, summary: str, user_id: str, session_id: str, pro
         "type": "compact_summary",
         "source": "session-start-compact",
         "session_id": session_id,
+        "importance": 5,
     }
     if branch:
         metadata["branch"] = branch

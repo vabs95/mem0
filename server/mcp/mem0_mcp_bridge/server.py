@@ -174,6 +174,8 @@ def add_memory(
         effective_metadata["project"] = project
     if importance is not None:
         effective_metadata["importance"] = importance
+    else:
+        effective_metadata.setdefault("importance", 5)
     if category is not None:
         effective_metadata["category"] = category
 

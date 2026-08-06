@@ -168,6 +168,7 @@ def store_summary(
         "type": "session_summary",
         "source": "stop-hook",
         "session_id": session_id,
+        "importance": 5,
     }
     if branch:
         metadata["branch"] = branch

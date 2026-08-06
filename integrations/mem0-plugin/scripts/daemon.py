@@ -33,6 +33,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
 import _handlers  # noqa: E402
+import session_stats  # noqa: E402
 from _platform import IS_WINDOWS  # noqa: E402
 from telemetry import detect_platform  # noqa: E402
 
@@ -156,43 +157,22 @@ def _install_caching() -> None:
     _handlers.resolve_branch = lambda cwd=None: _cached(f"branch:{cwd}", lambda: real_resolve_branch(cwd))
 
 
-def _summarize_event(hook_name: str, input_data: dict) -> str | None:
-    """Short human-readable description of what happened, for the timeline
-    UI — without this every row renders with an empty summary column."""
-    if hook_name == "user_prompt":
-        prompt = (input_data.get("prompt") or "").strip()
-        return prompt[:200] if prompt else None
-    if hook_name == "session_start":
-        return f"Session {input_data.get('source') or 'startup'}"
-    if hook_name == "stop":
-        return "Session ended"
-    if hook_name == "pre_compact":
-        return "Context compacted"
-    if hook_name == "add_memory":
-        text = (input_data.get("tool_input") or {}).get("text")
-        return text[:200] if isinstance(text, str) and text else "Memory added"
-    if hook_name == "post_tool_use":
-        tool = input_data.get("tool_name")
-        return f"Used {tool}" if tool else None
-    return None
-
-
-def _extract_added_memory_ids(tool_response) -> list[str]:
-    """Pull memory ids out of an add_memory MCP tool's response.
+def _parse_tool_response(tool_response) -> dict:
+    """Unwrap an MCP tool response into the plain ``{"results": [...]}``
+    dict underneath.
 
     Handles the response already being the JSON string server.py's
-    _json_call returns (``{"results": [{"id": ..., "event": "ADD"}]}``),
-    or having been unwrapped/re-wrapped by the calling editor's hook
-    payload into an MCP content-block shape (``{"content": [{"type":
-    "text", "text": "<same JSON string>"}]}``). Best-effort: any shape it
-    doesn't recognize just yields no ids, never raises (caller already
-    wraps this in a broad try/except).
+    _json_call returns, or having been unwrapped/re-wrapped by the calling
+    editor's hook payload into an MCP content-block shape (``{"content":
+    [{"type": "text", "text": "<same JSON string>"}]}``). Best-effort: any
+    shape it doesn't recognize just yields {}, never raises (callers wrap
+    this in a broad try/except regardless).
     """
     if isinstance(tool_response, str):
         try:
             tool_response = json.loads(tool_response)
         except (json.JSONDecodeError, TypeError):
-            return []
+            return {}
     if isinstance(tool_response, dict):
         content = tool_response.get("content")
         if isinstance(content, list):
@@ -204,12 +184,72 @@ def _extract_added_memory_ids(tool_response) -> list[str]:
                     except (json.JSONDecodeError, TypeError):
                         continue
                     break
-    if not isinstance(tool_response, dict):
-        return []
-    results = tool_response.get("results")
+    return tool_response if isinstance(tool_response, dict) else {}
+
+
+def _extract_added_memory_ids(tool_response) -> list[str]:
+    """Pull memory ids out of an add_memory MCP tool's response."""
+    results = _parse_tool_response(tool_response).get("results")
     if not isinstance(results, list):
         return []
     return [r["id"] for r in results if isinstance(r, dict) and r.get("id") and r.get("event") != "NONE"]
+
+
+def _count_results(tool_response) -> int:
+    results = _parse_tool_response(tool_response).get("results")
+    return len(results) if isinstance(results, list) else 0
+
+
+def _summarize_event(hook_name: str, input_data: dict, user_id: str, project_id: str) -> tuple[str | None, dict | None]:
+    """(summary, payload) describing what happened, for the timeline UI.
+
+    summary is the short one-line text every row shows; payload carries
+    whatever structured detail (query text, result count, command run,
+    ...) doesn't fit in that line but is still worth keeping — without
+    this every row past user_prompt/add_memory rendered a static,
+    identical-every-time string ("Session ended", "Used <tool>") that told
+    the UI nothing about what actually happened.
+    """
+    if hook_name == "user_prompt":
+        prompt = (input_data.get("prompt") or "").strip()
+        return (prompt[:200] if prompt else None), None
+    if hook_name == "session_start":
+        return f"Session {input_data.get('source') or 'startup'}", None
+    if hook_name == "stop":
+        try:
+            report = session_stats.report_for(user_id, project_id)
+        except Exception:
+            report = ""
+        return (report or "Session ended, no memory activity"), None
+    if hook_name == "pre_compact":
+        return "Context compacted", None
+    if hook_name == "add_memory":
+        text = (input_data.get("tool_input") or {}).get("text")
+        return (text[:200] if isinstance(text, str) and text else "Memory added"), None
+    if hook_name == "block_write":
+        path = (input_data.get("tool_input") or {}).get("file_path")
+        return (f"Blocked direct edit of memory file: {path}" if path else "Blocked direct memory file write"), None
+    if hook_name == "post_tool_use":
+        tool = input_data.get("tool_name") or ""
+        tool_input = input_data.get("tool_input") or {}
+        if tool.endswith("__search_memories") or tool.endswith("__get_memories"):
+            query = tool_input.get("query")
+            count = _count_results(input_data.get("tool_response"))
+            verb = "Searched" if query else "Fetched"
+            suffix = f' for "{str(query)[:80]}"' if query else ""
+            return f"{verb} memories{suffix} — {count} result{'s' if count != 1 else ''}", {
+                "query": query,
+                "result_count": count,
+            }
+        if tool.endswith("__delete_all_memories"):
+            return "Deleted all memories", None
+        if tool == "Bash":
+            command = tool_input.get("command") or ""
+            if not command:
+                return "Ran a shell command", None
+            return f"Ran: {command[:150]}", {"command": command[:500]}
+        return (f"Used {tool}" if tool else None), None
+    return None, None
 
 
 def _build_timeline_body(hook_name: str, input_data: dict) -> dict | None:
@@ -249,13 +289,25 @@ def _build_timeline_body(hook_name: str, input_data: dict) -> dict | None:
         category = (input_data.get("tool_input") or {}).get("metadata", {}).get("type")
 
     cwd = input_data.get("cwd")
+    user_id = _handlers.resolve_user_id()
+    # Only resolve from an explicit cwd. resolve_project_id() falls back to
+    # os.getcwd() when cwd is None/empty -- fine for every other caller in
+    # this codebase, which always runs as a fresh subprocess spawned with
+    # the right cwd, but wrong here: this daemon is one long-lived process
+    # whose own cwd is whatever directory it happened to start in, shared
+    # across every editor/project on the machine. A hook payload missing
+    # "cwd" would otherwise silently misattribute the event to that frozen
+    # startup directory instead of the project that's actually active.
+    project_id = _handlers.resolve_project_id(cwd) if cwd else "unknown"
+    summary, payload = _summarize_event(event_type, input_data, user_id, project_id)
     return {
         "event_type": event_type,
         "source_agent": detect_platform(),
-        "user_id": _handlers.resolve_user_id(),
-        "project": _handlers.resolve_project_id(cwd),
-        "summary": _summarize_event(event_type, input_data),
+        "user_id": user_id,
+        "project": project_id,
+        "summary": summary,
         "category": category,
+        "payload": payload,
         "memory_ids": memory_ids,
         "_api_key": api_key,
     }

@@ -28,19 +28,21 @@ from _identity import resolve_user_id  # noqa: E402
 from _project import resolve_project_id  # noqa: E402
 
 
+def _stats_file_for(user_id: str, project_id: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"mem0_session_stats_{user_id}_{project_id}.json")
+
+
 def _stats_file() -> str:
-    return os.path.join(
-        tempfile.gettempdir(), f"mem0_session_stats_{resolve_user_id()}_{resolve_project_id()}.json"
-    )
+    return _stats_file_for(resolve_user_id(), resolve_project_id())
 
 
 STATS_FILE = _stats_file()
 
 
-def _load() -> dict:
-    if os.path.isfile(STATS_FILE):
+def _load_from(path: str) -> dict:
+    if os.path.isfile(path):
         try:
-            with open(STATS_FILE) as f:
+            with open(path) as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
@@ -51,6 +53,10 @@ def _load() -> dict:
         "category_counts": {},
         "started": datetime.now().isoformat(),
     }
+
+
+def _load() -> dict:
+    return _load_from(STATS_FILE)
 
 
 def _save(stats: dict) -> None:
@@ -102,8 +108,7 @@ def peek() -> str:
     return json.dumps(stats)
 
 
-def report() -> str:
-    stats = _load()
+def _format_report(stats: dict) -> str:
     adds = stats.get("adds", 0)
     searches = stats.get("searches", 0)
     categories = stats.get("categories", [])
@@ -122,6 +127,28 @@ def report() -> str:
         parts.append(f"Categories touched: {', '.join(categories)}")
 
     return ". ".join(parts) + "."
+
+
+def report() -> str:
+    return _format_report(_load())
+
+
+def report_for(user_id: str, project_id: str) -> str:
+    """Same as report(), but for an explicit user/project pair instead of
+    this process's own resolved identity.
+
+    STATS_FILE is a module-level constant resolved once at import time --
+    fine for every other caller here, which is always a fresh short-lived
+    subprocess (spawn_bg([... "session_stats.py", "add", cat])). The
+    daemon is different: it's one long-lived process shared by every
+    editor/project on the machine, so importing this module there would
+    freeze STATS_FILE to whichever project happened to be active on the
+    daemon's first call and silently reuse that path for every project
+    after. This bypasses STATS_FILE entirely so the daemon can call it
+    in-process (no subprocess-spawn overhead under its dispatch lock) with
+    the identity it already resolved for this specific request.
+    """
+    return _format_report(_load_from(_stats_file_for(user_id, project_id)))
 
 
 def main() -> int:

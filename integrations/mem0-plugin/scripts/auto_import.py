@@ -197,6 +197,7 @@ def post_memory(api_key: str, content: str, user_id: str, filename: str, project
         "type": "project_profile",
         "file": filename,
         "source": "auto-import",
+        "importance": 5,
     }
     if branch:
         metadata["branch"] = branch

@@ -172,6 +172,9 @@ def cmd_enforce_metadata(input_data: dict) -> None:
         if "type" not in meta:
             meta["type"] = "task_learning"
             changed = True
+        if "importance" not in meta:
+            meta["importance"] = 5
+            changed = True
         if meta.get("confidence", 0) >= 1.0 and "infer" not in inp:
             inp["infer"] = False
             changed = True
