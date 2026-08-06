@@ -815,10 +815,21 @@ def _dispatch_via_daemon(hook_name: str, input_data: dict) -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python _handlers.py <hook_name>", file=sys.stderr)
+        print("Usage: python _handlers.py <hook_name> [--platform=NAME]", file=sys.stderr)
         sys.exit(1)
 
-    hook_name = sys.argv[1]
+    # Windows hook commands can't rely on the POSIX `MEM0_PLATFORM=codex
+    # python3 ...` inline env-var prefix (cmd.exe/CreateProcess don't
+    # support it), so command_windows entries pass the platform as a CLI
+    # arg instead and we fold it into os.environ here so every downstream
+    # read of MEM0_PLATFORM (identity resolution, the daemon's timeline
+    # source_agent attribution) sees it exactly like the POSIX path does.
+    args = [a for a in sys.argv[1:] if not a.startswith("--platform=")]
+    platform_args = [a for a in sys.argv[1:] if a.startswith("--platform=")]
+    if platform_args:
+        os.environ["MEM0_PLATFORM"] = platform_args[-1].split("=", 1)[1]
+
+    hook_name = args[0]
     input_data: dict = {}
     try:
         input_data = json.loads(sys.stdin.read())
