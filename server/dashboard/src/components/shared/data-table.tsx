@@ -205,7 +205,9 @@ export function DataTable<T>({
                     <div className="min-w-0 overflow-hidden">
                       {column.render
                         ? column.render(value, row)
-                        : String(value)}
+                        : value === null || value === undefined || value === ""
+                          ? <span className="text-onSurface-default-tertiary">—</span>
+                          : String(value)}
                     </div>
                   </td>
                 );
