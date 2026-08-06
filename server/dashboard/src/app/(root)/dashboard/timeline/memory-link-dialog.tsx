@@ -82,7 +82,9 @@ export function MemoryLinkDialog({
           if (cancelled) return;
           setResults((prev) => ({
             ...prev,
-            [id]: { status: "success", memory: res.data },
+            [id]: res.data
+              ? { status: "success", memory: res.data }
+              : { status: "notfound" },
           }));
         })
         .catch((err) => {
