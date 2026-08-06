@@ -65,13 +65,6 @@ messages = [
 client.add(messages, user_id="alice")
 ```
 
-**Don't prefix memory text with the date** ("On August 6, 2026, ..."). Every
-memory already carries a structured `created_at` timestamp, so restating
-it in prose wastes tokens on both write and every future recall/search hit,
-and dilutes the embedding with words that aren't the actual fact. Write
-the content directly: `"User rolled back the SearXNG CSS image layer"`,
-not `"On August 5, 2026, User rolled back..."`.
-
 ### Search memories
 ```python
 results = client.search("dietary preferences", filters={"user_id": "alice"})
