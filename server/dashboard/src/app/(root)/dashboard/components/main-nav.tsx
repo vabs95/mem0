@@ -10,7 +10,6 @@ import {
   Clock,
   FolderInput,
   GalleryVerticalEnd,
-  GitCompare,
   KeyRound,
   Settings,
   Sparkles,
@@ -80,22 +79,16 @@ export function MainNav({
                     active: pathname === "/dashboard/memories",
                   },
                   {
-                    title: "Contradictions",
-                    url: "/dashboard/contradictions",
-                    icon: GitCompare,
-                    active: pathname === "/dashboard/contradictions",
-                  },
-                  {
                     title: "Scoring Debugger",
                     url: "/dashboard/scoring-debugger",
                     icon: Brain,
                     active: pathname === "/dashboard/scoring-debugger",
                   },
                   {
-                    title: "Dream Consolidation",
+                    title: "Dream",
                     url: "/dashboard/dream",
                     icon: Sparkles,
-                    active: pathname === "/dashboard/dream",
+                    active: pathname === "/dashboard/dream" || pathname === "/dashboard/contradictions",
                   },
                   {
                     title: "Entities",
@@ -108,6 +101,12 @@ export function MainNav({
                     url: "/dashboard/timeline",
                     icon: Clock,
                     active: pathname === "/dashboard/timeline",
+                  },
+                  {
+                    title: "Export",
+                    url: "/dashboard/export",
+                    icon: FolderInput,
+                    active: pathname === "/dashboard/export",
                   },
                 ].map((item) => (
                   <SidebarMenuItem key={item.title}>
@@ -172,11 +171,6 @@ export function MainNav({
                       title: "Analytics",
                       url: "/dashboard/analytics",
                       icon: ChartLine,
-                    },
-                    {
-                      title: "Export",
-                      url: "/dashboard/export",
-                      icon: FolderInput,
                     },
                   ].map((item) => (
                     <SidebarMenuItem key={item.title}>

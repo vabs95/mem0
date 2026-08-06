@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
-import { Sparkles, Play, RefreshCw } from "lucide-react";
+import { Sparkles, Play, RefreshCw, ShieldAlert, CheckCircle2, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { EmptyState } from "@/components/self-hosted/empty-state";
@@ -23,16 +24,30 @@ import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
 import { ENTITY_ENDPOINTS, MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { DreamRun, Entity } from "@/types/api";
+import { DreamRun, Entity, Memory } from "@/types/api";
 import { getErrorMessage } from "@/lib/error-message";
 
 const ALL_VALUES = "__all__";
 const POLL_INTERVAL_MS = 2000;
 
+type DreamTab = "synthesis" | "supersede" | "merge";
+
+function initialTab(): DreamTab {
+  if (typeof window === "undefined") return "merge";
+  const fromQuery = new URLSearchParams(window.location.search).get("tab");
+  return fromQuery === "synthesis" || fromQuery === "supersede" ? fromQuery : "merge";
+}
+
 const STATUS_BADGE: Record<string, string> = {
   completed: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
   failed: "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300",
   running: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+};
+
+const TAB_STATUS_BADGE: Record<DreamTab, string> = {
+  synthesis: "text-onSurface-default-tertiary border-memBorder-primary",
+  supersede: "text-emerald-600 border-emerald-300 dark:text-emerald-300 dark:border-emerald-800",
+  merge: "text-amber-600 border-amber-300 dark:text-amber-300 dark:border-amber-800",
 };
 
 function scopeLabel(run: DreamRun): string {
@@ -46,6 +61,176 @@ function scopeLabel(run: DreamRun): string {
 }
 
 export default function DreamPage() {
+  const [activeTab, setActiveTab] = useState<DreamTab>(initialTab);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-xl font-semibold font-fustat flex items-center gap-2">
+          <Sparkles className="size-5 text-purple-400" />
+          Dream
+        </h1>
+        <p className="text-sm text-onSurface-default-tertiary mt-1">
+          Background curation that keeps memories current -- Synthesis, Supersede, and Merge.
+        </p>
+      </div>
+
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DreamTab)}>
+        <TabsList>
+          <TabsTrigger value="synthesis" className="gap-1.5">
+            Synthesis
+            <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px] border", TAB_STATUS_BADGE.synthesis)}>
+              Not built
+            </Badge>
+          </TabsTrigger>
+          <TabsTrigger value="supersede" className="gap-1.5">
+            Supersede
+            <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px] border", TAB_STATUS_BADGE.supersede)}>
+              Always on
+            </Badge>
+          </TabsTrigger>
+          <TabsTrigger value="merge" className="gap-1.5">
+            Merge
+            <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px] border", TAB_STATUS_BADGE.merge)}>
+              Manual
+            </Badge>
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="synthesis">
+          <SynthesisTab />
+        </TabsContent>
+        <TabsContent value="supersede">
+          <SupersedeTab />
+        </TabsContent>
+        <TabsContent value="merge">
+          <MergeTab />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function SynthesisTab() {
+  return (
+    <Card className="p-6 border-memBorder-primary space-y-3 text-center">
+      <Layers className="size-8 mx-auto text-onSurface-default-tertiary" />
+      <h2 className="text-sm font-semibold">Recurring signals become pattern memories</h2>
+      <p className="text-sm text-onSurface-default-tertiary max-w-lg mx-auto">
+        Not built yet. Synthesis would detect a recurring signal across multiple related (not just
+        near-duplicate) memories over time and generate a higher-level pattern memory from them --
+        a genuinely different capability from Merge, which only folds near-identical facts into one.
+        See the Roadmap section of <code className="text-xs">ARCHITECTURE.md</code> for more.
+      </p>
+    </Card>
+  );
+}
+
+function SupersedeTab() {
+  const { data: rawMemories = [], isLoading, refetch } = useApiQuery<Memory[]>(
+    async () => {
+      // show_superseded=true is required here -- GET /memories excludes
+      // superseded/merged memories by default (same convention as
+      // show_expired), so without it this tab could never see the data
+      // it exists to display.
+      const res = await api.get(MEMORY_ENDPOINTS.BASE, { params: { top_k: 500, show_superseded: true } });
+      const raw = res.data?.results ?? res.data ?? [];
+      return Array.isArray(raw) ? raw : [];
+    },
+    { errorToast: "Failed to load memories", initialData: [] },
+  );
+
+  const supersededMemories = rawMemories.filter((m) => m.metadata?.status === "superseded");
+  const activeCount = rawMemories.length - supersededMemories.length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-onSurface-default-tertiary">
+          Runs automatically on every new memory -- flags candidates by vector similarity (&ge; 0.85),
+          then asks the LLM to confirm before marking the older memory superseded. Similarity alone
+          never hides a memory.
+        </p>
+        <Button variant="outline" size="sm" onClick={() => void refetch()} className="shrink-0 ml-4">
+          Refresh Lineage
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Card className="p-4 border-memBorder-primary">
+          <p className="text-xs text-onSurface-default-tertiary font-medium">Total Indexed Facts</p>
+          <p className="text-2xl font-bold mt-1 font-mono">{rawMemories.length}</p>
+        </Card>
+        <Card className="p-4 border-memBorder-primary">
+          <p className="text-xs text-onSurface-default-tertiary font-medium">Active Valid Facts</p>
+          <p className="text-2xl font-bold mt-1 text-emerald-500 font-mono">{activeCount}</p>
+        </Card>
+        <Card className="p-4 border-memBorder-primary">
+          <p className="text-xs text-onSurface-default-tertiary font-medium">Superseded Contradictions</p>
+          <p className="text-2xl font-bold mt-1 text-amber-500 font-mono">{supersededMemories.length}</p>
+        </Card>
+      </div>
+
+      {isLoading ? (
+        <TableSkeleton rows={4} columns={3} />
+      ) : supersededMemories.length === 0 ? (
+        <EmptyState
+          title="No Contradictions Detected"
+          description="When new contradictory facts are ingested into Mem0, older vector-similar facts confirmed as contradictions will be linked and archived here."
+        />
+      ) : (
+        <div className="space-y-4">
+          <h2 className="text-sm font-medium text-onSurface-default-tertiary">
+            Superseded Memory Lineage Chains ({supersededMemories.length})
+          </h2>
+          {supersededMemories.map((mem) => (
+            <Card key={mem.id} className="p-4 border-memBorder-primary space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="border-amber-500 text-amber-500">
+                    <ShieldAlert className="size-3 mr-1" />
+                    Superseded
+                  </Badge>
+                  {mem.metadata?.category && (
+                    <Badge variant="outline" className="capitalize">
+                      {mem.metadata.category}
+                    </Badge>
+                  )}
+                  {mem.metadata?.importance != null && (
+                    <Badge variant="outline">Importance: {mem.metadata.importance}/10</Badge>
+                  )}
+                </div>
+                <span className="text-xs font-mono text-onSurface-default-tertiary">ID: {mem.id}</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-surface-default-secondary p-3 rounded-lg text-sm">
+                <div>
+                  <p className="text-xs text-onSurface-default-tertiary font-semibold mb-1">
+                    Outdated Fact (Hidden from Search)
+                  </p>
+                  <p className="line-through text-onSurface-default-tertiary">{mem.memory}</p>
+                </div>
+                {mem.metadata?.superseded_by_id && (
+                  <div className="border-t md:border-t-0 md:border-l border-memBorder-primary pt-2 md:pt-0 md:pl-4">
+                    <p className="text-xs text-emerald-500 font-semibold mb-1 flex items-center gap-1">
+                      <CheckCircle2 className="size-3" />
+                      Superseded By Memory
+                    </p>
+                    <p className="font-mono text-xs text-onSurface-default-primary break-all">
+                      {mem.metadata.superseded_by_id}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MergeTab() {
   const [userId, setUserId] = useState(ALL_VALUES);
   const [agentId, setAgentId] = useState(ALL_VALUES);
   const [runId, setRunId] = useState(ALL_VALUES);
@@ -191,18 +376,15 @@ export default function DreamPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold font-fustat flex items-center gap-2">
-          <Sparkles className="size-5 text-purple-400" />
-          Dream Memory Consolidation Engine
-        </h1>
-        <p className="text-sm text-onSurface-default-tertiary mt-1">
-          Scans active memories within tenant scope, clusters near-duplicate facts (similarity ≥ 0.90), and synthesizes them into consolidated memory statements while updating merged source status. Runs in the background -- history below persists across refreshes.
-        </p>
-      </div>
-
       <Card className="p-5 border-memBorder-primary space-y-4">
-        <h2 className="text-sm font-semibold">Run Consolidation Pass</h2>
+        <div>
+          <h2 className="text-sm font-semibold">Run Consolidation Pass</h2>
+          <p className="text-xs text-onSurface-default-tertiary mt-1">
+            Clusters near-duplicate active memories (similarity &ge; 0.90) within the selected scope
+            and folds each cluster into one synthesized memory. Manual/on-demand -- runs in the
+            background once started, history below persists across refreshes.
+          </p>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <Select value={userId} onValueChange={setUserId}>
             <SelectTrigger>

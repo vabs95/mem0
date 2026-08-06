@@ -24,6 +24,7 @@ import { toast } from "@/components/ui/use-toast";
 import { getErrorMessage } from "@/lib/error-message";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { Entity, MemoryExport } from "@/types/api";
+import { DateRangePicker, DateRangeSelection } from "@/components/shared/date-range-picker";
 
 const ALL_VALUES = "__all__";
 
@@ -33,7 +34,6 @@ const DATE_RANGES = {
   "7": { label: "Last 7 days", days: 7 },
   "30": { label: "Last 30 days", days: 30 },
 } as const;
-type DateRangeKey = keyof typeof DATE_RANGES;
 
 const STATUS_BADGE: Record<string, string> = {
   completed: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
@@ -47,7 +47,7 @@ export default function ExportPage() {
   const [agentId, setAgentId] = useState(ALL_VALUES);
   const [runId, setRunId] = useState(ALL_VALUES);
   const [project, setProject] = useState(ALL_VALUES);
-  const [dateRange, setDateRange] = useState<DateRangeKey>("all");
+  const [dateRange, setDateRange] = useState<DateRangeSelection>({ mode: "preset", key: "all" });
   const [isCreating, setIsCreating] = useState(false);
   const [exportToDelete, setExportToDelete] = useState<MemoryExport | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -78,14 +78,22 @@ export default function ExportPage() {
   const handleCreate = async () => {
     setIsCreating(true);
     try {
-      const range = DATE_RANGES[dateRange];
+      const dateParams =
+        dateRange.mode === "custom"
+          ? { date_from: dateRange.from.toISOString(), date_to: dateRange.to.toISOString() }
+          : {
+              date_from:
+                DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES].days
+                  ? subDays(new Date(), DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES].days!).toISOString()
+                  : undefined,
+            };
       await api.post(EXPORT_ENDPOINTS.CREATE, {
         format: format_,
         user_id: userId === ALL_VALUES ? undefined : userId,
         agent_id: agentId === ALL_VALUES ? undefined : agentId,
         run_id: runId === ALL_VALUES ? undefined : runId,
         project: project === ALL_VALUES ? undefined : project,
-        date_from: range.days ? subDays(new Date(), range.days).toISOString() : undefined,
+        ...dateParams,
       });
       toast({ title: "Export created", variant: "success" });
       void refetch();
@@ -310,18 +318,7 @@ export default function ExportPage() {
 
           <div className="space-y-2">
             <span className="text-sm font-medium">Date range</span>
-            <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRangeKey)}>
-              <SelectTrigger className="w-[160px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(DATE_RANGES) as DateRangeKey[]).map((key) => (
-                  <SelectItem key={key} value={key}>
-                    {DATE_RANGES[key].label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <DateRangePicker presets={DATE_RANGES} value={dateRange} onChange={setDateRange} />
           </div>
 
           <Button onClick={() => void handleCreate()} disabled={isCreating}>

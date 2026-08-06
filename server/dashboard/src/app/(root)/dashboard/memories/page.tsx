@@ -33,6 +33,7 @@ import { ENTITY_ENDPOINTS, MEMORY_ENDPOINTS, TIMELINE_ENDPOINTS } from "@/utils/
 import { useApiQuery } from "@/hooks/use-api-query";
 import { Entity, Memory, TimelineEvent } from "@/types/api";
 import { subDays } from "date-fns";
+import { DateRangePicker, DateRangeSelection } from "@/components/shared/date-range-picker";
 
 const PAGE_SIZE = 20;
 // Keep in sync with ALL_MEMORIES_LIMIT in server/main.py.
@@ -45,7 +46,8 @@ const DATE_RANGES = {
   "7": { label: "Last 7 days", days: 7 },
   "30": { label: "Last 30 days", days: 30 },
 } as const;
-type DateRangeKey = keyof typeof DATE_RANGES;
+
+type SortableKey = "memory" | "created_at";
 
 export default function MemoriesPage() {
   const [userId, setUserId] = useState(ALL_VALUES);
@@ -53,10 +55,12 @@ export default function MemoriesPage() {
   const [runId, setRunId] = useState(ALL_VALUES);
   const [project, setProject] = useState(ALL_VALUES);
   const [statusFilter, setStatusFilter] = useState("all");
-  const [dateRange, setDateRange] = useState<DateRangeKey>("all");
+  const [dateRange, setDateRange] = useState<DateRangeSelection>({ mode: "preset", key: "all" });
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
   const [page, setPage] = useState(0);
+  const [sortKey, setSortKey] = useState<SortableKey>("created_at");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
 
   const { data: entities = [] } = useApiQuery<Entity[]>(
@@ -104,14 +108,37 @@ export default function MemoriesPage() {
       ? rawMemories
       : rawMemories.filter((m) => (m.metadata?.status ?? "active") === statusFilter);
 
-  const memories =
-    dateRange === "all"
-      ? filteredByStatus
-      : filteredByStatus.filter((m) => {
-          if (!m.created_at) return false;
-          const range = DATE_RANGES[dateRange];
-          return range.days ? new Date(m.created_at) >= subDays(new Date(), range.days) : true;
-        });
+  const filteredByDate = filteredByStatus.filter((m) => {
+    if (dateRange.mode === "preset") {
+      if (dateRange.key === "all") return true;
+      if (!m.created_at) return false;
+      const range = DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES];
+      return range.days ? new Date(m.created_at) >= subDays(new Date(), range.days) : true;
+    }
+    if (!m.created_at) return false;
+    const created = new Date(m.created_at);
+    return created >= dateRange.from && created <= dateRange.to;
+  });
+
+  const memories = [...filteredByDate].sort((a, b) => {
+    const dir = sortDirection === "asc" ? 1 : -1;
+    if (sortKey === "memory") {
+      return a.memory.localeCompare(b.memory) * dir;
+    }
+    const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return (aTime - bTime) * dir;
+  });
+
+  const handleSortChange = (key: keyof Memory) => {
+    if (key !== "memory" && key !== "created_at") return;
+    if (sortKey === key) {
+      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDirection("asc");
+    }
+  };
 
   const {
     data: sourceEvents = [],
@@ -160,6 +187,7 @@ export default function MemoriesPage() {
       key: "memory" as keyof Memory,
       label: "Content",
       width: 400,
+      sortable: true,
       render: (value: string) => (
         <span className="line-clamp-2 text-sm">{value}</span>
       ),
@@ -170,6 +198,7 @@ export default function MemoriesPage() {
       key: "created_at" as keyof Memory,
       label: "Created",
       width: 120,
+      sortable: true,
       render: (value: string) =>
         value ? format(new Date(value), "MMM d, yyyy") : "--",
     },
@@ -253,18 +282,7 @@ export default function MemoriesPage() {
             <SelectItem value="merged">Merged</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRangeKey)}>
-          <SelectTrigger className="w-[160px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {(Object.keys(DATE_RANGES) as DateRangeKey[]).map((key) => (
-              <SelectItem key={key} value={key}>
-                {DATE_RANGES[key].label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <DateRangePicker presets={DATE_RANGES} value={dateRange} onChange={setDateRange} className="w-[180px]" />
       </div>
 
       {isLoading ? (
@@ -302,6 +320,9 @@ export default function MemoriesPage() {
                   ? "bg-surface-default-tertiary"
                   : undefined
               }
+              sortKey={sortKey}
+              sortDirection={sortDirection}
+              onSortChange={handleSortChange}
             />
           </Card>
           {totalPages > 1 && (

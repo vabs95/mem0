@@ -31,6 +31,7 @@ import { api } from "@/utils/api";
 import { ENTITY_ENDPOINTS, TIMELINE_ENDPOINTS } from "@/utils/api-endpoints";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { Entity, TimelineEvent } from "@/types/api";
+import { DateRangePicker, DateRangeSelection } from "@/components/shared/date-range-picker";
 
 const EVENT_LIMIT = 150;
 const ALL_PROJECTS = "__all__";
@@ -42,7 +43,6 @@ const DATE_RANGES = {
   "7": { label: "Last 7 days", days: 7 },
   "30": { label: "Last 30 days", days: 30 },
 } as const;
-type DateRangeKey = keyof typeof DATE_RANGES;
 
 const EVENT_TYPE_PILLS: { value: string; label: string }[] = [
   { value: "__all__", label: "All" },
@@ -117,7 +117,7 @@ export default function TimelinePage() {
   const [selectedProject, setSelectedProject] = useState<string>(ALL_PROJECTS);
   const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES);
   const [selectedEventType, setSelectedEventType] = useState<string>("__all__");
-  const [dateRange, setDateRange] = useState<DateRangeKey>("all");
+  const [dateRange, setDateRange] = useState<DateRangeSelection>({ mode: "preset", key: "all" });
   const [search, setSearch] = useState("");
 
   const { data: projects = [] } = useApiQuery<string[]>(
@@ -137,14 +137,19 @@ export default function TimelinePage() {
     refetch,
   } = useApiQuery<TimelineEvent[]>(
     async () => {
-      const range = DATE_RANGES[dateRange];
+      const since =
+        dateRange.mode === "custom"
+          ? dateRange.from.toISOString()
+          : DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES].days
+            ? subDays(new Date(), DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES].days!).toISOString()
+            : undefined;
       const res = await api.get<TimelineEvent[]>(TIMELINE_ENDPOINTS.EVENTS, {
         params: {
           limit: EVENT_LIMIT,
           project: selectedProject === ALL_PROJECTS ? undefined : selectedProject,
           category: selectedCategory === ALL_CATEGORIES ? undefined : selectedCategory,
           event_type: selectedEventType === "__all__" ? undefined : selectedEventType,
-          since: range.days ? subDays(new Date(), range.days).toISOString() : undefined,
+          since,
         },
       });
       setLastUpdated(new Date().toISOString());
@@ -166,28 +171,30 @@ export default function TimelinePage() {
 
   const filteredEvents = useMemo(() => {
     const query = search.trim().toLowerCase();
-    if (!query) return events;
     return events.filter((e) => {
+      if (dateRange.mode === "custom" && new Date(e.created_at) > dateRange.to) return false;
+      if (!query) return true;
       const haystack = [e.summary, e.source_agent, e.user_id, e.agent_id, e.project, e.run_id]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
       return haystack.includes(query);
     });
-  }, [events, search]);
+  }, [events, search, dateRange]);
 
   const hasActiveFilters =
     selectedProject !== ALL_PROJECTS ||
     selectedCategory !== ALL_CATEGORIES ||
     selectedEventType !== "__all__" ||
-    dateRange !== "all" ||
+    dateRange.mode !== "preset" ||
+    dateRange.key !== "all" ||
     search.trim() !== "";
 
   const clearFilters = () => {
     setSelectedProject(ALL_PROJECTS);
     setSelectedCategory(ALL_CATEGORIES);
     setSelectedEventType("__all__");
-    setDateRange("all");
+    setDateRange({ mode: "preset", key: "all" });
     setSearch("");
   };
 
@@ -249,18 +256,7 @@ export default function TimelinePage() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRangeKey)}>
-            <SelectTrigger className="w-[160px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(DATE_RANGES) as DateRangeKey[]).map((key) => (
-                <SelectItem key={key} value={key}>
-                  {DATE_RANGES[key].label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <DateRangePicker presets={DATE_RANGES} value={dateRange} onChange={setDateRange} className="w-[180px]" />
           {hasActiveFilters && (
             <Button variant="ghost" size="sm" onClick={clearFilters}>
               Clear filters
