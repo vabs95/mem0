@@ -173,6 +173,8 @@ def test_platform_antigravity(monkeypatch):
     import telemetry
 
     monkeypatch.delenv("MEM0_PLATFORM", raising=False)
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("PLUGIN_ROOT", raising=False)
     monkeypatch.setenv("ANTIGRAVITY_PLUGIN_ROOT", "/ext")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/ext")  # antigravity sets both
     assert telemetry.detect_platform() == "antigravity"

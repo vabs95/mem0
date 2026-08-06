@@ -34,6 +34,7 @@ sys.path.insert(0, SCRIPT_DIR)
 
 import _handlers  # noqa: E402
 from _platform import IS_WINDOWS  # noqa: E402
+from telemetry import detect_platform  # noqa: E402
 
 STATE_DIR = os.path.expanduser("~/.mem0")
 PORT_FILE = os.path.join(STATE_DIR, "daemon.port")
@@ -250,7 +251,7 @@ def _build_timeline_body(hook_name: str, input_data: dict) -> dict | None:
     cwd = input_data.get("cwd")
     return {
         "event_type": event_type,
-        "source_agent": os.environ.get("MEM0_PLATFORM", "claude-code"),
+        "source_agent": detect_platform(),
         "user_id": _handlers.resolve_user_id(),
         "project": _handlers.resolve_project_id(cwd),
         "summary": _summarize_event(event_type, input_data),

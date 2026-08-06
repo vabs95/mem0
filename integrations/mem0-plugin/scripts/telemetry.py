@@ -72,16 +72,25 @@ def detect_platform() -> str:
     explicit = os.environ.get("MEM0_PLATFORM")
     if explicit:
         return explicit
-    if os.environ.get("ANTIGRAVITY_PLUGIN_ROOT"):
-        return "antigravity"
+    # Native, host-injected signals first. mem0's own shared hooks.json sets
+    # ANTIGRAVITY_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT unconditionally in its
+    # command strings (so every host that executes those exact commands gets
+    # both, regardless of which one it actually is) — checked last below as
+    # a fallback, since on their own they can't discriminate between hosts.
+    # CLAUDECODE and bare PLUGIN_ROOT are each host's own ambient env var,
+    # not something mem0's hook config injects, so they're trustworthy.
+    if os.environ.get("CLAUDECODE"):
+        return "claude-code"
     if os.environ.get("PLUGIN_ROOT"):
         return "codex"
-    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_PLUGIN_ROOT"):
-        return "claude-code"
     if os.environ.get("CURSOR_PLUGIN_ROOT"):
         return "cursor"
     if os.environ.get("WINDSURF_PLUGIN_ROOT"):
         return "windsurf"
+    if os.environ.get("ANTIGRAVITY_PLUGIN_ROOT"):
+        return "antigravity"
+    if os.environ.get("CLAUDE_PLUGIN_ROOT"):
+        return "claude-code"
     return "plugin"
 
 
