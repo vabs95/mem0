@@ -23,6 +23,13 @@ def _scripts_on_path():
 
 
 @pytest.fixture(autouse=True)
+def _no_daemon(monkeypatch):
+    """Tests that subprocess-invoke _handlers.py must not spawn a real
+    background daemon — keep them hermetic and fast."""
+    monkeypatch.setenv("MEM0_NO_DAEMON", "true")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     """Point HOME at a tmp dir so ~/.mem0 writes never touch the real home."""
     home = tmp_path / "home"
@@ -39,19 +46,6 @@ def tmp_git_repo(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "https://github.com/mem0ai/mem0.git"],
-        cwd=tmp_path,
-        capture_output=True,
-        check=True,
-    )
-    return tmp_path
-
-
-@pytest.fixture()
-def tmp_git_repo_ssh(tmp_path):
-    """Create a temp dir with a git repo and SSH remote."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(
-        ["git", "remote", "add", "origin", "git@github.com:acme/cool-project.git"],
         cwd=tmp_path,
         capture_output=True,
         check=True,

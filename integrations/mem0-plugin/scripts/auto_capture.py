@@ -17,9 +17,9 @@ import logging
 import os
 import sys
 import urllib.error
-import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _api import add_memory
 from _identity import resolve_api_key, resolve_user_id
 from _project import resolve_branch, resolve_project_id
 
@@ -39,7 +39,6 @@ if os.environ.get("MEM0_DEBUG"):
     except OSError:
         pass
 
-API_URL = "https://api.mem0.ai"
 TAIL_LINES = 200
 MAX_CONTENT_CHARS = 8000
 MIN_CONTENT_CHARS = 100
@@ -111,6 +110,8 @@ def store_exchange(api_key: str, messages: list[dict], user_id: str,
                    project_id: str, branch: str, session_id: str) -> bool:
     metadata = {
         "type": "auto_capture",
+        "category": "auto_capture",
+        "importance": 6,
         "source": "auto_capture",
         "confidence": 0.7,
     }
@@ -127,25 +128,14 @@ def store_exchange(api_key: str, messages: list[dict], user_id: str,
         "infer": True,
     }
 
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        f"{API_URL}/v3/memories/add/",
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Token {api_key}",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status in (200, 201):
-                result = json.loads(resp.read())
-                log.info("Auto-captured: event_id=%s status=%s",
-                         result.get("event_id", "?"), result.get("status", "?"))
-                return True
-            log.warning("API returned status %d", resp.status)
-            return False
+        status, result = add_memory(api_key, body, timeout=15)
+        if status in (200, 201):
+            log.info("Auto-captured: event_id=%s status=%s",
+                     result.get("event_id", "?"), result.get("status", "?"))
+            return True
+        log.warning("API returned status %d", status)
+        return False
     except urllib.error.URLError as e:
         log.warning("API call failed: %s", e)
         return False
@@ -170,7 +160,12 @@ def main():
     project_id = resolve_project_id()
     branch = resolve_branch()
     session_id = ""
-    sid_file = f"/tmp/mem0_session_id_{os.environ.get('USER', 'default')}"
+    # Must match the same resolved user id + project _handlers.py's
+    # cmd_session_start() used to name this file -- raw $USER diverges from
+    # it whenever MEM0_USER_ID overrides the OS username, and an unscoped
+    # per-user (not per-project) key collides across concurrent sessions in
+    # different projects for the same user.
+    sid_file = f"/tmp/mem0_session_id_{user_id}_{project_id}"
     if os.path.isfile(sid_file):
         try:
             with open(sid_file) as f:

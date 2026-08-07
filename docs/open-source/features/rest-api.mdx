@@ -264,14 +264,17 @@ The OSS REST server exposes the following endpoints. None use the `/v1/` prefix.
 | `GET` | `/configure` | Get the current memory configuration |
 | `GET` | `/configure/providers` | List the LLM and embedder providers bundled in the container |
 | `POST` | `/memories` | Create memories |
-| `GET` | `/memories` | Get all memories (filter by `user_id`, `agent_id`, or `run_id`) |
+| `GET` | `/memories` | Get all memories (filter by `user_id`, `agent_id`, `run_id`, and/or `project`) |
 | `GET` | `/memories/{memory_id}` | Get a specific memory |
 | `PUT` | `/memories/{memory_id}` | Update a memory |
 | `DELETE` | `/memories/{memory_id}` | Delete a specific memory |
 | `DELETE` | `/memories` | Delete all memories for an identifier |
 | `GET` | `/memories/{memory_id}/history` | Get memory history |
 | `POST` | `/search` | Search memories |
+| `POST` | `/memories/dream` | Consolidate near-duplicate memories and synthesize facts (Dream) |
 | `POST` | `/reset` | Reset all memories |
+
+`project` is an additional narrowing filter on top of `user_id`/`agent_id`/`run_id` — it's not an identity scope on its own, so at least one of the other three is still required to list or delete a specific set of memories. It's stored as a regular metadata field (`metadata.project`), the same convention the MCP bridge uses to translate the hosted platform's `app_id`.
 
 ### Authentication
 
@@ -305,10 +308,39 @@ All `/api-keys` endpoints require a JWT.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/entities` | Distinct `user_id` / `agent_id` / `run_id` values with memory counts |
-| `DELETE` | `/entities/{entity_type}/{entity_id}` | Cascade-delete all memories for an entity; `entity_type` is `user`, `agent`, or `run` |
+| `GET` | `/entities` | Distinct `user_id` / `agent_id` / `run_id` / `project` values with memory counts |
+| `DELETE` | `/entities/{entity_type}/{entity_id}` | Cascade-delete all memories (and any Timeline events scoped to the same entity) for an entity; `entity_type` is `user`, `agent`, `run`, or `project` |
 
-The `/auth/*`, `/api-keys`, `/requests`, and `/entities` routes are new to the self-hosted server and primarily back the dashboard, but you can call them directly from your own tooling.
+### Timeline
+
+An append-only activity log, separate from the extracted-fact memories above. Each event optionally links forward to the memory IDs it produced (e.g. an `add_memory` tool call), so the dashboard can show "produced by" backlinks from a memory to the event that created it.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/timeline/events` | Record an event (`event_type`, `source_agent`, optional `user_id`/`agent_id`/`run_id`/`project`/`category`/`summary`/`payload`/`memory_ids`) |
+| `GET` | `/timeline/events` | List events, filterable by `user_id`, `agent_id`, `run_id`, `project`, `event_type`, `category`, and `since` |
+| `GET` | `/timeline/events/for-memory/{memory_id}` | Find the event(s) that produced a given memory (reverse lookup over `memory_ids`) |
+
+### Memory export
+
+Synchronous export of memories to JSON or CSV, filterable by `user_id`/`agent_id`/`run_id`/`project`/date range. Each export is recorded so past exports can be re-downloaded without re-running the query.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/export/memories` | Create an export (`format`: `json` or `csv`, plus optional entity/date filters); returns immediately with the completed export's metadata |
+| `GET` | `/export` | List past exports |
+| `GET` | `/export/{export_id}/download` | Download an export's file |
+| `DELETE` | `/export/{export_id}` | Delete an export's history record |
+
+<Note>
+  Exports run synchronously and hold the full result set in memory, so they're sized for typical self-hosted volumes (thousands of memories), not bulk data-warehouse extraction. There's no LLM-powered schema reshaping — export the raw fields and post-process downstream if you need a custom shape.
+</Note>
+
+The `/auth/*`, `/api-keys`, `/requests`, `/entities`, `/timeline`, and `/export` routes are new to the self-hosted server and primarily back the dashboard, but you can call them directly from your own tooling.
+
+### MCP bridge
+
+For MCP (Model Context Protocol) clients — Claude Code, Codex, and similar agents — `server/mcp/` runs a small sidecar that exposes `add_memory`/`search_memory` MCP tools and translates hosted-platform-shaped calls (`app_id`) to this server's REST API (`project`). See [`server/mcp/README.md`](https://github.com/mem0ai/mem0/blob/main/server/mcp/README.md) for setup.
 
 ---
 

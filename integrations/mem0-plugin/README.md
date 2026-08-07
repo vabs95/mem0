@@ -67,6 +67,8 @@ Claude Code and Claude Cowork share the same plugin system.
 
 This installs the full plugin including the MCP server, lifecycle hooks (automatic memory capture), and the Mem0 SDK skill.
 
+> **Self-hosting mem0?** `.mcp.json` in your clone points at the hosted `mcp.mem0.ai` endpoint by default. Edit its `url` field to your own server's `/mcp` path (e.g. `http://localhost:8888/mcp`), same as the Codex self-hosting note below.
+
 ### Codex
 
 **Option A — Direct MCP** (fastest, MCP only):
@@ -93,6 +95,8 @@ codex plugin marketplace add ~/codex-plugins/mem0-source
 This points Codex at the repo's `.agents/plugins/marketplace.json`, which references `integrations/mem0-plugin/` as the local source. Restart Codex, run `/plugins`, and install **Mem0** from the **Mem0 Plugins** marketplace.
 
 > **Don't combine with Option A.** The plugin manifest auto-registers `mem0` as an MCP server via `integrations/mem0-plugin/.codex-mcp.json` — adding a manual `[mcp_servers.mem0]` block would duplicate the registration.
+
+> **Self-hosting mem0?** `.codex-mcp.json` in your clone points at the hosted `mcp.mem0.ai` endpoint by default. Codex doesn't expand `${VAR}` templates inside `url`, so you'll need to edit that field directly to your own server's `/mcp` path (e.g. `http://localhost:8888/mcp`) — this edit doesn't survive a `codex plugin add` reinstall, so you'll redo it each time you reinstall against a self-hosted endpoint. To pin a specific user without editing the file, export `MEM0_USER_ID` in your shell; it's already wired up via `env_http_headers` and sent as `X-User-Id`, falling back to the server's default when unset.
 
 **Optional — enable lifecycle hooks.** Codex doesn't auto-wire hooks from plugin manifests; it only reads `~/.codex/hooks.json` (or `<repo>/.codex/hooks.json`) ([docs](https://developers.openai.com/codex/hooks)). Run the bundled installer once to merge Mem0's entries:
 
@@ -261,6 +265,15 @@ python integrations/mem0-plugin/scripts/setup_coding_categories.py --apply
 
 Requires the `mem0ai` Python SDK (`pip install mem0ai`) and `MEM0_API_KEY` set. `project.update(custom_categories=[...])` always replaces the full list.
 
+## Architecture
+
+Lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `Stop`, etc.) are dispatched through a single local warm daemon, not a fresh process per hook call:
+
+- **One daemon per machine, shared across editors.** The first hook invocation spawns a background HTTP server on localhost (`daemon.py`); every subsequent hook from any client (Claude Code, Codex, ...) on that machine dispatches to the same running process instead of paying Python startup cost each time. It shuts itself down after a period of inactivity and respawns on demand.
+- **Self-updating.** The daemon fingerprints its own source files at startup and shuts down within about a minute of detecting a change on disk (e.g. after a plugin upgrade); the next hook call spawns a fresh instance with the new code. No manual restart is needed for plugin-script changes — only an MCP *tool* update still requires reconnecting the client (see "Updating the plugin" above).
+- **`_handlers.py` holds all hook logic**, called identically by every platform's thin adapter — there's exactly one implementation of each hook to maintain, not one per editor or OS.
+- **`_api.py` is the cloud/self-hosted translation layer.** Set `MEM0_API_MODE=self_hosted` and `MEM0_API_URL` to point the plugin at a self-hosted server instead of the hosted platform; `_api.py` translates cloud-shaped calls (`app_id`, nested `metadata.*` filters) into the self-hosted REST API's flat `project` field and filter shape.
+
 ## MCP Tools
 
 Once installed, the following tools are available:
@@ -274,8 +287,8 @@ Once installed, the following tools are available:
 | `update_memory` | Overwrite a memory's text by ID |
 | `delete_memory` | Delete a single memory by ID |
 | `delete_all_memories` | Bulk delete all memories in scope |
-| `delete_entities` | Delete a user/agent/app/run entity and its memories |
-| `list_entities` | List users/agents/apps/runs stored in Mem0 |
+| `delete_entities` | Delete a user/agent/app (project)/run entity and its memories |
+| `list_entities` | List users/agents/apps (projects)/runs stored in Mem0 |
 
 ## License
 

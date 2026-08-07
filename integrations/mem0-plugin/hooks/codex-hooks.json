@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/block_memory_write.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py block_write",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py block_write --platform=codex",
             "timeout": 3
           }
         ]
@@ -16,7 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/enforce_metadata_defaults.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py enforce_metadata",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py enforce_metadata --platform=codex",
             "timeout": 3
           }
         ]
@@ -26,7 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/on_file_read.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py on_file_read",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py on_file_read --platform=codex",
             "timeout": 5
           }
         ]
@@ -38,7 +41,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/on_session_start.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py session_start",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py session_start --platform=codex",
             "statusMessage": "Loading mem0 context..."
           }
         ]
@@ -49,7 +53,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/on_user_prompt.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py user_prompt",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py user_prompt --platform=codex",
             "statusMessage": "Checking memory relevance...",
             "timeout": 12
           }
@@ -62,7 +67,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/on_post_tool_use.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py post_tool_use",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py post_tool_use --platform=codex",
             "timeout": 3
           }
         ]
@@ -72,7 +78,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/on_bash_output.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py on_bash_output",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py on_bash_output --platform=codex",
             "timeout": 12
           }
         ]
@@ -83,7 +90,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/on_stop.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py stop",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py stop --platform=codex",
             "timeout": 30
           }
         ]
@@ -94,7 +102,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MEM0_PLATFORM=codex ${PLUGIN_ROOT}/scripts/on_pre_compact.sh",
+            "command": "MEM0_PLATFORM=codex python3 ${PLUGIN_ROOT}/scripts/_handlers.py pre_compact",
+            "command_windows": "python ${PLUGIN_ROOT}/scripts/_handlers.py pre_compact --platform=codex",
             "statusMessage": "Preparing pre-compaction summary..."
           }
         ]

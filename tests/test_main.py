@@ -296,6 +296,32 @@ def test_delete_all(memory_instance):
     assert result["message"] == "Memories deleted successfully!"
 
 
+def test_delete_all_with_project_filter(memory_instance):
+    mock_memories = [Mock(id="1")]
+    memory_instance.vector_store.list = Mock(side_effect=[(mock_memories, None), ([], None)])
+    memory_instance._delete_memory = Mock()
+
+    result = memory_instance.delete_all(user_id="test_user", project="my-project")
+
+    assert memory_instance._delete_memory.call_count == 1
+    memory_instance.vector_store.list.assert_called_with(
+        filters={"user_id": "test_user", "project": "my-project"}, top_k=1000
+    )
+    assert result["message"] == "Memories deleted successfully!"
+
+
+def test_delete_all_project_only_is_a_valid_scope(memory_instance):
+    memory_instance.vector_store.list = Mock(return_value=([], None))
+    memory_instance._delete_memory = Mock()
+
+    result = memory_instance.delete_all(project="my-project")
+
+    memory_instance.vector_store.list.assert_called_with(
+        filters={"project": "my-project"}, top_k=1000
+    )
+    assert result["message"] == "Memories deleted successfully!"
+
+
 def test_delete_all_paginates_beyond_vector_store_page_size(memory_instance):
     first_batch = [Mock(id=str(index)) for index in range(1000)]
     second_batch = [Mock(id="1000")]
@@ -450,6 +476,21 @@ class TestEntityIdValidation:
 
         memory_instance.vector_store.list.assert_called_once_with(
             filters={"user_id": "alice"}, top_k=1000
+        )
+
+    def test_delete_all_rejects_whitespace_only_project(self, memory_instance):
+        """delete_all should reject whitespace-only project, same as the entity IDs."""
+        with pytest.raises(ValueError, match="Invalid project.*cannot be empty"):
+            memory_instance.delete_all(project="   ")
+
+    def test_delete_all_trims_project_before_list(self, memory_instance):
+        """delete_all should trim leading/trailing whitespace on project too."""
+        memory_instance.vector_store.list = Mock(return_value=([], None))
+
+        memory_instance.delete_all(user_id="alice", project="  my-project  ")
+
+        memory_instance.vector_store.list.assert_called_once_with(
+            filters={"user_id": "alice", "project": "my-project"}, top_k=1000
         )
 
     def test_validate_coerces_non_string_entity_id(self):

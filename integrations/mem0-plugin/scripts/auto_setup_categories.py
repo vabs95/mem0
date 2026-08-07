@@ -163,7 +163,7 @@ def _acquire_lock() -> bool:
         os.write(fd, str(os.getpid()).encode())
         os.close(fd)
         return True
-    except FileExistsError:
+    except (FileExistsError, PermissionError):
         try:
             if time.time() - os.path.getmtime(LOCK_FILE) > 120:
                 os.unlink(LOCK_FILE)

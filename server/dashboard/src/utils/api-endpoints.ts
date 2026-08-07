@@ -10,6 +10,10 @@ export const AUTH_ENDPOINTS = {
 
 export const MEMORY_ENDPOINTS = {
   BASE: "/memories",
+  SEARCH: "/search",
+  DREAM: "/memories/dream",
+  DREAM_RUNS: "/memories/dream/runs",
+  DREAM_RUN_BY_ID: (runId: string) => `/memories/dream/runs/${runId}`,
   BY_ID: (memoryId: string) => `/memories/${memoryId}`,
   HISTORY: (memoryId: string) => `/memories/${memoryId}/history`,
   CONFIGURE: "/configure",
@@ -31,4 +35,17 @@ export const ENTITY_ENDPOINTS = {
   BASE: "/entities",
   BY_ID: (type: string, id: string) =>
     `/entities/${type}/${encodeURIComponent(id)}`,
+} as const;
+
+export const TIMELINE_ENDPOINTS = {
+  EVENTS: "/timeline/events",
+  FOR_MEMORY: (memoryId: string) =>
+    `/timeline/events/for-memory/${encodeURIComponent(memoryId)}`,
+} as const;
+
+export const EXPORT_ENDPOINTS = {
+  BASE: "/export",
+  CREATE: "/export/memories",
+  DOWNLOAD: (exportId: string) => `/export/${exportId}/download`,
+  BY_ID: (exportId: string) => `/export/${exportId}`,
 } as const;

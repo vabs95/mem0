@@ -2,10 +2,12 @@ import asyncio
 import logging
 import os
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import telemetry
-from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, verify_auth
+from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, require_admin, require_auth, verify_auth
 from db import SessionLocal
 from dotenv import load_dotenv
 from errors import (
@@ -16,16 +18,18 @@ from errors import (
     upstream_error,
     upstream_error_handler,
 )
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
-from models import RequestLog, User
+from models import DreamRun, RequestLog, User
 from pydantic import BaseModel, Field
 from rate_limit import limiter
 from routers import api_keys as api_keys_router
 from routers import auth as auth_router
 from routers import entities as entities_router
+from routers import export as export_router
 from routers import requests as requests_router
+from routers import timeline as timeline_router
 from schemas import MessageResponse
 from server_state import (
     get_current_config,
@@ -37,6 +41,7 @@ from server_state import (
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from mem0.exceptions import ValidationError as Mem0ValidationError
 
@@ -170,6 +175,8 @@ app.include_router(auth_router.router)
 app.include_router(api_keys_router.router)
 app.include_router(entities_router.router)
 app.include_router(requests_router.router)
+app.include_router(timeline_router.router)
+app.include_router(export_router.router)
 
 
 class Message(BaseModel):
@@ -205,6 +212,37 @@ class SearchRequest(BaseModel):
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
     explain: Optional[bool] = Field(None, description="Include score details for each search result.")
     show_expired: Optional[bool] = Field(None, description="Include expired memories.")
+    show_superseded: Optional[bool] = Field(
+        None, description="Include memories marked superseded or merged by the Supersede/Dream lifecycle."
+    )
+
+
+class DreamRequest(BaseModel):
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    run_id: Optional[str] = None
+    project: Optional[str] = None
+    similarity_threshold: Optional[float] = Field(0.90, description="Minimum vector similarity for clustering near-duplicates.")
+    limit: Optional[int] = Field(100, description="Maximum active memories to process during dream consolidation.")
+
+
+class DreamRunItem(BaseModel):
+    id: uuid.UUID
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    run_id: Optional[str] = None
+    project: Optional[str] = None
+    similarity_threshold: float
+    status: str
+    processed: int
+    clusters_merged: int
+    new_memories_created: int
+    memories_merged: int
+    error: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
 
 
 class GenerateInstructionsRequest(BaseModel):
@@ -414,11 +452,21 @@ def get_all_memories(
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    project: Optional[str] = None,
     top_k: Optional[int] = Query(None, ge=0, le=ALL_MEMORIES_LIMIT),
     show_expired: bool = Query(False),
+    show_superseded: bool = Query(False),
     _auth=Depends(verify_auth),
 ):
-    """Retrieve stored memories. Lists all memories when no identifier is provided (admin only)."""
+    """Retrieve stored memories. Lists all memories when no identifier is provided (admin only).
+
+    `project` is an additional narrowing filter, not an identity scope on its
+    own — at least one of user_id/run_id/agent_id is still required to avoid
+    the unscoped (admin-only) listing path below, same as before this param
+    existed. Passing project without an identity filter falls through to
+    that raw admin listing, which ignores it, exactly like every other
+    filter already does today.
+    """
     try:
         if not any([user_id, run_id, agent_id]):
             auth_type = getattr(request.state, "auth_type", "none")
@@ -427,12 +475,15 @@ def get_all_memories(
             # Admin all-memory listing is intentionally raw; scoped get_all below applies expiry visibility.
             return _list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT)
         filters = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v
+            k: v
+            for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id, "project": project}.items()
+            if v
         }
         params = {"filters": filters}
         if top_k is not None:
             params["top_k"] = top_k
         params["show_expired"] = show_expired
+        params["show_superseded"] = show_superseded
         return get_memory_instance().get_all(**params)
     except HTTPException:
         raise
@@ -475,6 +526,8 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
             params["explain"] = search_req.explain
         if search_req.show_expired is not None:
             params["show_expired"] = search_req.show_expired
+        if search_req.show_superseded is not None:
+            params["show_superseded"] = search_req.show_superseded
         return get_memory_instance().search(query=search_req.query, filters=filters, **params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -482,6 +535,110 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
         raise
     except Exception:
         raise upstream_error()
+
+
+def _run_dream_background(run_id: uuid.UUID, params: dict) -> None:
+    """Executes the actual Memory.dream() call outside the request/response
+    cycle, then updates the DreamRun row with the outcome. Runs in its own
+    short-lived DB session (BackgroundTasks run after the response is sent,
+    so the request-scoped session is already closed by then)."""
+    try:
+        result = get_memory_instance().dream(**params)
+        with SessionLocal() as db:
+            run = db.get(DreamRun, run_id)
+            if run is None:
+                return
+            run.status = "completed"
+            run.processed = result.get("processed", 0)
+            run.clusters_merged = result.get("clusters_merged", 0)
+            run.new_memories_created = result.get("new_memories_created", 0)
+            run.memories_merged = result.get("memories_merged", 0)
+            run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+    except Exception as exc:
+        logging.exception(f"Dream run {run_id} failed")
+        with SessionLocal() as db:
+            run = db.get(DreamRun, run_id)
+            if run is None:
+                return
+            run.status = "failed"
+            run.error = str(exc)
+            run.completed_at = datetime.now(timezone.utc)
+            db.commit()
+
+
+@app.post("/memories/dream", summary="Consolidate memories (Dream)", status_code=202, response_model=DreamRunItem)
+def dream_memories(dream_req: DreamRequest, background_tasks: BackgroundTasks, user: User = Depends(require_auth)):
+    """Kick off a Dream consolidation run as a background task and return
+    immediately. Poll GET /memories/dream/runs/{id} (or list via
+    GET /memories/dream/runs) for progress -- this can take a while for a
+    large scope, so the caller isn't blocked waiting for it to finish."""
+    # Mirrors the same fast pre-check Memory.dream() itself raises on, so a
+    # bad request 400s immediately instead of "succeeding" into a run record
+    # that would just fail a moment later in the background.
+    if not (dream_req.user_id or dream_req.agent_id or dream_req.run_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "At least one of 'user_id', 'agent_id', or 'run_id' is required to run dream "
+                "consolidation -- 'project' alone cannot own the synthesized memories it creates."
+            ),
+        )
+
+    similarity_threshold = dream_req.similarity_threshold or 0.90
+    limit = dream_req.limit or 100
+    run = DreamRun(
+        requested_by=user.id,
+        user_id=dream_req.user_id,
+        agent_id=dream_req.agent_id,
+        run_id=dream_req.run_id,
+        project=dream_req.project,
+        similarity_threshold=similarity_threshold,
+        status="running",
+    )
+    with SessionLocal() as db:
+        db.add(run)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="A Dream run is already in progress for this scope -- wait for it to finish before starting another.",
+            )
+        db.refresh(run)
+        run_id = run.id
+        response = DreamRunItem.model_validate(run)
+
+    background_tasks.add_task(
+        _run_dream_background,
+        run_id,
+        {
+            "user_id": dream_req.user_id,
+            "agent_id": dream_req.agent_id,
+            "run_id": dream_req.run_id,
+            "project": dream_req.project,
+            "similarity_threshold": similarity_threshold,
+            "limit": limit,
+        },
+    )
+    return response
+
+
+@app.get("/memories/dream/runs", summary="List Dream run history", response_model=List[DreamRunItem])
+def list_dream_runs(_auth=Depends(verify_auth), limit: int = Query(default=50, ge=1, le=200)):
+    with SessionLocal() as db:
+        stmt = select(DreamRun).order_by(DreamRun.created_at.desc()).limit(limit)
+        return db.execute(stmt).scalars().all()
+
+
+@app.get("/memories/dream/runs/{run_id}", summary="Get a Dream run's status", response_model=DreamRunItem)
+def get_dream_run(run_id: uuid.UUID, _auth=Depends(verify_auth)):
+    with SessionLocal() as db:
+        run = db.get(DreamRun, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Dream run not found.")
+        return run
 
 
 @app.put("/memories/{memory_id}", summary="Update a memory")
@@ -529,14 +686,22 @@ def delete_all_memories(
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    project: Optional[str] = None,
     _auth=Depends(require_admin),
 ):
-    """Delete all memories for a given identifier. Requires admin role."""
-    if not any([user_id, run_id, agent_id]):
+    """Delete all memories for a given identifier. Requires admin role.
+
+    project narrows a bulk delete to one project — e.g. user_id + project
+    clears one user's memories for a single project instead of all of
+    that user's memories across every project they've ever used.
+    """
+    if not any([user_id, run_id, agent_id, project]):
         raise HTTPException(status_code=400, detail="At least one identifier is required.")
     try:
         params = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v
+            k: v
+            for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id, "project": project}.items()
+            if v
         }
         get_memory_instance().delete_all(**params)
         return MessageResponse(message="All relevant memories deleted")

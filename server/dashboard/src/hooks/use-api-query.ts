@@ -6,6 +6,11 @@ interface UseApiQueryOptions<T> {
   enabled?: boolean;
   errorToast?: string;
   initialData?: T;
+  /** When set (ms), refetches on this interval in addition to the initial
+   * fetch. Pass `undefined` to disable -- callers can toggle this reactively
+   * (e.g. only while some fetched row is still "running") since the effect
+   * re-subscribes whenever this value changes. */
+  refetchInterval?: number;
 }
 
 interface UseApiQueryResult<T> {
@@ -19,7 +24,7 @@ export function useApiQuery<T>(
   fetcher: () => Promise<T>,
   options: UseApiQueryOptions<T> = {},
 ): UseApiQueryResult<T> {
-  const { enabled = true, errorToast, initialData } = options;
+  const { enabled = true, errorToast, initialData, refetchInterval } = options;
 
   const [data, setData] = useState<T | undefined>(initialData);
   const [isLoading, setIsLoading] = useState(enabled);
@@ -51,6 +56,12 @@ export function useApiQuery<T>(
   useEffect(() => {
     if (enabled) void run();
   }, [enabled, run]);
+
+  useEffect(() => {
+    if (!enabled || !refetchInterval) return;
+    const id = setInterval(() => void run(), refetchInterval);
+    return () => clearInterval(id);
+  }, [enabled, refetchInterval, run]);
 
   return { data, isLoading, error, refetch: run };
 }

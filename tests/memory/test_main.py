@@ -1178,3 +1178,262 @@ class TestAddPipelineEntityEmbeddingCountGuard:
         assert any("padding/truncating" in r.message for r in caplog.records), (
             "expected count-mismatch warning was not emitted"
         )
+
+
+class TestPayloadIsSuperseded:
+    def test_payload_is_superseded_detection(self):
+        from mem0.memory.main import _payload_is_superseded
+
+        assert _payload_is_superseded(None) is False
+        assert _payload_is_superseded({}) is False
+        assert _payload_is_superseded({"status": "active"}) is False
+        assert _payload_is_superseded({"status": "superseded"}) is True
+
+    def test_supersede_contradictions_pass(self, mocker):
+        """A high-similarity candidate the LLM confirms as contradictory gets superseded."""
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+        memory.llm.generate_response = MagicMock(return_value='{"contradicts": true}')
+
+        candidate = SimpleNamespace(id="cand1", score=0.90, payload={"status": "active", "data": "Old fact"})
+        memory.vector_store.search = MagicMock(return_value=[candidate])
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        memory._supersede_contradictions("new1", "New fact", [0.1, 0.2], {"user_id": "u1"})
+
+        assert memory.vector_store.update.call_count == 1
+        updated_call = memory.vector_store.update.call_args
+        assert updated_call.kwargs["vector_id"] == "cand1"
+        assert updated_call.kwargs["payload"]["status"] == "superseded"
+        assert updated_call.kwargs["payload"]["superseded_by_id"] == "new1"
+
+    def test_supersede_skipped_when_llm_says_not_contradictory(self, mocker):
+        """High vector similarity alone isn't enough -- a near-duplicate or
+        merely-related candidate the LLM says doesn't contradict must NOT be
+        superseded."""
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+        memory.llm.generate_response = MagicMock(return_value='{"contradicts": false}')
+
+        candidate = SimpleNamespace(id="cand1", score=0.92, payload={"status": "active", "data": "Related fact"})
+        memory.vector_store.search = MagicMock(return_value=[candidate])
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        memory._supersede_contradictions("new1", "New fact", [0.1, 0.2], {"user_id": "u1"})
+
+        assert memory.vector_store.update.call_count == 0
+
+    def test_supersede_fails_closed_on_llm_error(self, mocker):
+        """If the LLM confirmation call itself fails (bad response, provider
+        error), the candidate must be left alone rather than silently hidden."""
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+        memory.llm.generate_response = MagicMock(side_effect=RuntimeError("provider down"))
+
+        candidate = SimpleNamespace(id="cand1", score=0.95, payload={"status": "active", "data": "Old fact"})
+        memory.vector_store.search = MagicMock(return_value=[candidate])
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        memory._supersede_contradictions("new1", "New fact", [0.1, 0.2], {"user_id": "u1"})
+
+        assert memory.vector_store.update.call_count == 0
+
+
+def _dream_raw_payload_lookup(payloads):
+    """Mimics vector_store.get(vector_id=...) -> SimpleNamespace(payload=raw dict).
+
+    payloads: dict of id -> raw (storage-shaped, "data" key, flat fields) payload.
+    """
+    def _get(vector_id):
+        payload = payloads.get(vector_id)
+        return SimpleNamespace(payload=payload) if payload else None
+    return MagicMock(side_effect=_get)
+
+
+class TestMemoryDream:
+    def test_memory_dream_consolidation(self, mocker):
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        # get_all()'s formatted output: "memory" key, status/importance
+        # nested under "metadata" -- this is the real shape, not a flat dict.
+        mem1 = {"id": "m1", "memory": "Prefers Python", "metadata": {"status": "active", "importance": 8}}
+        mem2 = {"id": "m2", "memory": "Prefers Python language", "metadata": {"status": "active", "importance": 6}}
+        memory.get_all = MagicMock(return_value={"results": [mem1, mem2]})
+        memory.embedding_model.embed = MagicMock(return_value=[0.1, 0.2])
+
+        cand = SimpleNamespace(id="m2", score=0.95, payload=mem2)
+        memory.vector_store.search = MagicMock(return_value=[cand])
+        memory.add = MagicMock(return_value={"results": [{"id": "synth1"}]})
+        raw_payloads = {
+            "m1": {"data": "Prefers Python", "status": "active", "importance": 8, "hash": "h1"},
+            "m2": {"data": "Prefers Python language", "status": "active", "importance": 6, "hash": "h2"},
+        }
+        memory.vector_store.get = _dream_raw_payload_lookup(raw_payloads)
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        res = memory.dream(user_id="u1")
+
+        assert res["clusters_merged"] == 1
+        assert res["new_memories_created"] == 1
+        assert res["memories_merged"] == 2
+        assert memory.add.call_count == 1
+
+        # get_all() is keyword-only and explicitly rejects user_id/agent_id/
+        # run_id/limit as top-level kwargs (it wants filters={...}, top_k=) --
+        # assert the real calling convention so a regression back to the old
+        # broken call (caught live: dream() 400'd immediately with "Top-level
+        # entity parameters ... are not supported in get_all()") fails loudly
+        # here instead of only in production, since get_all is mocked above
+        # and would silently accept any kwargs.
+        _, get_all_kwargs = memory.get_all.call_args
+        assert get_all_kwargs.get("filters") == {"user_id": "u1"}
+        assert get_all_kwargs.get("top_k") == 100
+        assert "user_id" not in get_all_kwargs
+        assert "limit" not in get_all_kwargs
+
+        # infer=False: the synthesized memory must be stored verbatim, not
+        # re-fed through the LLM extraction/dedup pipeline (caught live: this
+        # was the likely cause of the merged memory's status field ending up
+        # blank instead of "active").
+        add_call = memory.add.call_args
+        assert add_call.kwargs["infer"] is False
+        assert add_call.args[0] == [{"role": "user", "content": "Prefers Python | Prefers Python language"}]
+        # importance lives under metadata, not top-level -- confirm the
+        # average is actually computed from real values (7 = round((8+6)/2)),
+        # not silently falling back to the "no importance found" default of 6.
+        assert add_call.kwargs["metadata"]["importance"] == 7
+
+        # The merge-mark write must use the RAW payload shape (has "data"),
+        # never the get_all()-formatted dict (has "memory") -- writing the
+        # wrong shape overwrites and permanently blanks the stored memory.
+        # Caught live: every "merged" memory on the VPS had data=NULL.
+        update_calls = {c.kwargs["vector_id"]: c.kwargs["payload"] for c in memory.vector_store.update.call_args_list}
+        assert set(update_calls) == {"m1", "m2"}
+        for vector_id, payload in update_calls.items():
+            assert payload["data"] == raw_payloads[vector_id]["data"]
+            assert "memory" not in payload
+            assert payload["status"] == "merged"
+            assert payload["merged_into_id"] == "synth1"
+
+    def test_memory_dream_tags_synthesized_memory_with_project(self, mocker):
+        """The merged memory dream() writes must carry the project scope it
+        ran with, or it silently drops out of that project's memory set."""
+        mock_llm, mock_vs = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        mem1 = {"id": "m1", "memory": "Prefers Python", "metadata": {"status": "active", "importance": 8}}
+        mem2 = {"id": "m2", "memory": "Prefers Python language", "metadata": {"status": "active", "importance": 6}}
+        memory.get_all = MagicMock(return_value={"results": [mem1, mem2]})
+        memory.embedding_model.embed = MagicMock(return_value=[0.1, 0.2])
+
+        cand = SimpleNamespace(id="m2", score=0.95, payload=mem2)
+        memory.vector_store.search = MagicMock(return_value=[cand])
+        memory.add = MagicMock(return_value={"results": [{"id": "synth1"}]})
+        memory.vector_store.get = _dream_raw_payload_lookup({
+            "m1": {"data": "Prefers Python", "status": "active", "importance": 8},
+            "m2": {"data": "Prefers Python language", "status": "active", "importance": 6},
+        })
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        memory.dream(user_id="u1", project="proj-a")
+
+        _, kwargs = memory.add.call_args
+        assert kwargs["metadata"]["project"] == "proj-a"
+
+    def test_memory_dream_rejects_project_only_scope(self, mocker):
+        """A project alone can't own the synthesized memory dream() creates
+        for a merge cluster -- add() requires user_id/agent_id/run_id, so a
+        project-only call must fail the same fast pre-check rather than
+        crashing later once a merge cluster is actually found."""
+        _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        with pytest.raises(ValueError, match="At least one of"):
+            memory.dream(project="proj-a")
+
+    def test_memory_dream_rejects_unscoped_call(self, mocker):
+        """Without a scope, dream() would scan and merge across every
+        tenant's memories -- must fail fast like delete_all() does, not
+        silently run a cross-tenant consolidation."""
+        _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+
+        with pytest.raises(ValueError, match="At least one of"):
+            memory.dream()
+
+    @pytest.mark.asyncio
+    async def test_async_memory_dream_calls_get_all_with_correct_signature(self, mocker):
+        """AsyncMemory.dream() had the identical bug as the sync version:
+        calling get_all(user_id=..., limit=...) instead of
+        get_all(filters={...}, top_k=...). Assert the real calling
+        convention directly since get_all is mocked here."""
+        _setup_mocks(mocker)
+        memory = AsyncMemory()
+        memory.config = mocker.MagicMock()
+
+        mem1 = {"id": "m1", "memory": "Prefers Python", "metadata": {"status": "active", "importance": 8}}
+        memory.get_all = mocker.AsyncMock(return_value={"results": [mem1]})
+        memory.embedding_model.aembed = mocker.AsyncMock(return_value=[0.1, 0.2])
+        memory.vector_store.search = MagicMock(return_value=[])
+        memory.add = mocker.AsyncMock(return_value={"results": [{"id": "synth1"}]})
+
+        await memory.dream(user_id="u1")
+
+        _, get_all_kwargs = memory.get_all.call_args
+        assert get_all_kwargs.get("filters") == {"user_id": "u1"}
+        assert get_all_kwargs.get("top_k") == 100
+        assert "user_id" not in get_all_kwargs
+        assert "limit" not in get_all_kwargs
+
+    @pytest.mark.asyncio
+    async def test_async_memory_dream_merge_uses_raw_payload_and_infer_false(self, mocker):
+        """Async mirror of the sync merge-write/infer=False regression test --
+        same bug class existed in both, must not regress in either."""
+        _setup_mocks(mocker)
+        memory = AsyncMemory()
+        memory.config = mocker.MagicMock()
+
+        mem1 = {"id": "m1", "memory": "Prefers Python", "metadata": {"status": "active", "importance": 8}}
+        mem2 = {"id": "m2", "memory": "Prefers Python language", "metadata": {"status": "active", "importance": 6}}
+        memory.get_all = mocker.AsyncMock(return_value={"results": [mem1, mem2]})
+        memory.embedding_model.aembed = mocker.AsyncMock(return_value=[0.1, 0.2])
+
+        cand = SimpleNamespace(id="m2", score=0.95, payload=mem2)
+        memory.vector_store.search = MagicMock(return_value=[cand])
+        memory.add = mocker.AsyncMock(return_value={"results": [{"id": "synth1"}]})
+        raw_payloads = {
+            "m1": {"data": "Prefers Python", "status": "active", "importance": 8},
+            "m2": {"data": "Prefers Python language", "status": "active", "importance": 6},
+        }
+        memory.vector_store.get = _dream_raw_payload_lookup(raw_payloads)
+        memory.vector_store.update = MagicMock()
+        memory.db.add_history = MagicMock()
+
+        res = await memory.dream(user_id="u1")
+
+        assert res["memories_merged"] == 2
+        add_call = memory.add.call_args
+        assert add_call.kwargs["infer"] is False
+        assert add_call.args[0] == [{"role": "user", "content": "Prefers Python | Prefers Python language"}]
+        assert add_call.kwargs["metadata"]["importance"] == 7
+
+        update_calls = {c.kwargs["vector_id"]: c.kwargs["payload"] for c in memory.vector_store.update.call_args_list}
+        assert set(update_calls) == {"m1", "m2"}
+        for vector_id, payload in update_calls.items():
+            assert payload["data"] == raw_payloads[vector_id]["data"]
+            assert "memory" not in payload
+
+

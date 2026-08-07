@@ -10,7 +10,9 @@ Provides:
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
 
 
 def get_bm25_params(query: str, *, lemmatized: Optional[str] = None) -> tuple:
@@ -55,6 +57,37 @@ def normalize_bm25(raw_score: float, midpoint: float, steepness: float) -> float
 
 
 ENTITY_BOOST_WEIGHT = 0.5
+IMPORTANCE_BOOST_WEIGHT = 0.3
+RECENCY_BOOST_WEIGHT = 0.2
+DEFAULT_RECENCY_HALF_LIFE_DAYS = 30.0
+
+
+def compute_recency_score(
+    timestamp_val: Optional[Any],
+    half_life_days: float = DEFAULT_RECENCY_HALF_LIFE_DAYS,
+) -> float:
+    """Calculate exponential recency decay score in [0.0, 1.0].
+
+    Formula: score = exp(-days_old / half_life_days)
+    """
+    if not timestamp_val or half_life_days <= 0:
+        return 0.0
+
+    try:
+        if isinstance(timestamp_val, (int, float)):
+            dt = datetime.fromtimestamp(timestamp_val, tz=timezone.utc)
+        elif isinstance(timestamp_val, str):
+            dt = datetime.fromisoformat(timestamp_val.replace("Z", "+00:00"))
+        elif isinstance(timestamp_val, datetime):
+            dt = timestamp_val if timestamp_val.tzinfo else timestamp_val.replace(tzinfo=timezone.utc)
+        else:
+            return 0.0
+
+        now = datetime.now(timezone.utc)
+        days_old = max(0.0, (now - dt).total_seconds() / 86400.0)
+        return math.exp(-days_old / half_life_days)
+    except Exception:
+        return 0.0
 
 
 def score_and_rank(
@@ -64,21 +97,16 @@ def score_and_rank(
     threshold: float,
     top_k: int,
     explain: bool = False,
+    use_recency_decay: bool = True,
+    half_life_days: float = DEFAULT_RECENCY_HALF_LIFE_DAYS,
 ) -> List[Dict[str, Any]]:
     """Score candidates additively and return top-k results.
 
-    For each candidate:
-        semantic_score is taken from the result's score field.
-        combined = (semantic + bm25 + entity_boost) / max_possible
+    Supports vector similarity + BM25 keyword rank + entity boost +
+    importance weighting + exponential recency time decay.
 
     Threshold gates the semantic score BEFORE combining -- candidates
-    below the threshold are excluded even if BM25/entity would boost them.
-
-    The divisor adapts based on which signals are active:
-        - Semantic only: max_possible = 1.0
-        - Semantic + BM25: max_possible = 2.0
-        - Semantic + BM25 + entity: max_possible = 2.5
-        - Semantic + entity (no BM25): max_possible = 1.5
+    below the threshold are excluded even if BM25/entity/importance would boost them.
 
     Args:
         semantic_results: Candidate memories from vector search.
@@ -87,6 +115,8 @@ def score_and_rank(
         threshold: Minimum semantic score required before hybrid scoring.
         top_k: Maximum number of results to return.
         explain: Include score_details in each result when true.
+        use_recency_decay: Include exponential recency time decay scoring.
+        half_life_days: Half-life in days for recency decay calculation.
 
     Returns:
         List of scored result dicts sorted by combined score descending.
@@ -94,11 +124,32 @@ def score_and_rank(
     has_bm25 = bool(bm25_scores)
     has_entity = bool(entity_boosts)
 
+    # Determine whether importance/recency are in play ONCE for the whole
+    # batch, not per-candidate -- max_possible is the scoring denominator, so
+    # if it varied per-candidate (e.g. one has an importance field and its
+    # neighbor doesn't), otherwise-identical candidates would be divided by
+    # different numbers and their relative ranking would be distorted by
+    # incidental payload completeness rather than actual signal strength.
+    # A candidate missing a field that the batch is otherwise using gets a
+    # neutral 0.5 for that signal instead of being excluded from it.
+    has_importance = any(
+        isinstance(r.get("payload"), dict) and r["payload"].get("importance") is not None
+        for r in semantic_results
+    )
+    has_recency = use_recency_decay and any(
+        isinstance(r.get("payload"), dict) and (r["payload"].get("created_at") or r["payload"].get("updated_at"))
+        for r in semantic_results
+    )
+
     max_possible = 1.0
     if has_bm25:
         max_possible += 1.0
     if has_entity:
         max_possible += ENTITY_BOOST_WEIGHT
+    if has_importance:
+        max_possible += IMPORTANCE_BOOST_WEIGHT
+    if has_recency:
+        max_possible += RECENCY_BOOST_WEIGHT
 
     scored: List[Dict[str, Any]] = []
 
@@ -114,20 +165,44 @@ def score_and_rank(
         mem_id_str = str(mem_id)
         bm25_score = bm25_scores.get(mem_id_str, 0.0)
         entity_boost = entity_boosts.get(mem_id_str, 0.0)
+        payload = result.get("payload") or {}
 
-        raw_combined = semantic_score + bm25_score + entity_boost
+        importance_score = 0.5
+        if has_importance:
+            raw_importance = payload.get("importance") if isinstance(payload, dict) else None
+            if raw_importance is not None:
+                try:
+                    importance_score = max(0.1, min(float(raw_importance) / 10.0, 1.0))
+                except (ValueError, TypeError):
+                    pass
+
+        recency_score = 0.5
+        if has_recency:
+            ts = payload.get("created_at") or payload.get("updated_at") if isinstance(payload, dict) else None
+            if ts:
+                recency_score = compute_recency_score(ts, half_life_days=half_life_days)
+
+        raw_combined = (
+            semantic_score
+            + bm25_score
+            + entity_boost
+            + (importance_score * IMPORTANCE_BOOST_WEIGHT if has_importance else 0.0)
+            + (recency_score * RECENCY_BOOST_WEIGHT if has_recency else 0.0)
+        )
         combined = min(raw_combined / max_possible, 1.0)
 
         scored_result = {
             "id": mem_id_str,
             "score": combined,
-            "payload": result.get("payload"),
+            "payload": payload,
         }
         if explain:
             scored_result["score_details"] = {
                 "semantic_score": semantic_score,
                 "bm25_score": bm25_score,
                 "entity_boost": entity_boost,
+                "importance_score": importance_score if has_importance else 0.0,
+                "recency_score": recency_score if has_recency else 0.0,
                 "raw_score": raw_combined,
                 "max_possible_score": max_possible,
                 "final_score": combined,
@@ -137,3 +212,4 @@ def score_and_rank(
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_k]
+

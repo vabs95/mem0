@@ -446,6 +446,26 @@ def _payload_is_expired(payload: Optional[Dict[str, Any]]) -> bool:
         return False
 
 
+def _payload_is_superseded(payload: Optional[Dict[str, Any]]) -> bool:
+    if not payload or not isinstance(payload, dict):
+        return False
+    return payload.get("status") == "superseded"
+
+
+_SUPERSEDE_CONTRADICTION_PROMPT = """You are checking whether a NEW fact actually \
+contradicts or invalidates an EXISTING fact, versus the two merely being similar, \
+compatible, or duplicates of each other.
+
+EXISTING fact: {existing}
+NEW fact: {new}
+
+Respond with strict JSON only: {{"contradicts": true or false}}
+- true: the NEW fact makes the EXISTING fact outdated, wrong, or superseded.
+- false: the facts are compatible, near-duplicates, unrelated, or about different \
+things -- even if worded similarly.
+"""
+
+
 setup_config()
 logger = logging.getLogger(__name__)
 
@@ -1253,6 +1273,7 @@ class Memory(MemoryBase):
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 20,
         show_expired: bool = False,
+        show_superseded: bool = False,
         **kwargs,
     ):
         """
@@ -1264,6 +1285,8 @@ class Memory(MemoryBase):
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
             show_expired (bool, optional): Include expired memories. Defaults to False.
+            show_superseded (bool, optional): Include memories marked superseded or
+                merged by the Supersede/Dream lifecycle. Defaults to False.
 
         Returns:
             dict: A dictionary containing a list of memories under the "results" key.
@@ -1302,7 +1325,7 @@ class Memory(MemoryBase):
             )
 
         limit = top_k
-        fetch_limit = limit if show_expired else max(limit * 4, 60)
+        fetch_limit = limit if (show_expired and show_superseded) else max(limit * 4, 60)
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
@@ -1310,7 +1333,9 @@ class Memory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"}
         )
 
-        all_memories_result = self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit)
+        all_memories_result = self._get_all_from_vector_store(
+            effective_filters, fetch_limit, show_expired, limit, show_superseded=show_superseded
+        )
 
         if scale_threshold_notice:
             display_scale_threshold_notice(self, "sync", "get_all", *scale_threshold_notice)
@@ -1318,7 +1343,7 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "get_all")
         return {"results": all_memories_result}
 
-    def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None):
+    def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, show_superseded=False):
         memories_result = self.vector_store.list(filters=filters, top_k=limit)
 
         # Handle different vector store return formats by inspecting first element
@@ -1348,6 +1373,8 @@ class Memory(MemoryBase):
         formatted_memories = []
         for mem in actual_memories:
             if not show_expired and _payload_is_expired(mem.payload):
+                continue
+            if not show_superseded and _payload_is_superseded(mem.payload):
                 continue
             memory_item_dict = MemoryItem(
                 id=mem.id,
@@ -1382,6 +1409,7 @@ class Memory(MemoryBase):
         explain: bool = False,
         reference_date: Optional[Any] = None,
         show_expired: bool = False,
+        show_superseded: bool = False,
         **kwargs,
     ):
         """
@@ -1487,7 +1515,8 @@ class Memory(MemoryBase):
 
         search_start = time.perf_counter()
         original_memories = self._search_vector_store(
-            query, effective_filters, limit, threshold, explain=explain, show_expired=show_expired
+            query, effective_filters, limit, threshold, explain=explain, show_expired=show_expired,
+            show_superseded=show_superseded
         )
         search_elapsed_seconds = time.perf_counter() - search_start
 
@@ -1620,7 +1649,7 @@ class Memory(MemoryBase):
                 return True
         return False
 
-    def _search_vector_store(self, query, filters, limit, threshold=0.1, explain=False, show_expired=False):
+    def _search_vector_store(self, query, filters, limit, threshold=0.1, explain=False, show_expired=False, show_superseded=False):
         # Guard against None threshold (backward compat)
         if threshold is None:
             threshold = 0.1
@@ -1663,6 +1692,8 @@ class Memory(MemoryBase):
         for mem in semantic_results:
             payload = mem.payload if hasattr(mem, 'payload') else {}
             if not show_expired and _payload_is_expired(payload):
+                continue
+            if not show_superseded and _payload_is_superseded(payload):
                 continue
             mem_id = str(mem.id)
             candidates.append({
@@ -1882,7 +1913,13 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "delete")
         return {"message": "Memory deleted successfully!"}
 
-    def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
+    def delete_all(
+        self,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        project: Optional[str] = None,
+    ):
         """
         Delete all memories.
 
@@ -1890,10 +1927,15 @@ class Memory(MemoryBase):
             user_id (str, optional): ID of the user to delete memories for. Defaults to None.
             agent_id (str, optional): ID of the agent to delete memories for. Defaults to None.
             run_id (str, optional): ID of the run to delete memories for. Defaults to None.
+            project (str, optional): Restrict deletion to memories tagged with this project
+                (stored in metadata by callers, e.g. the self-hosted server). Combine with
+                user_id/agent_id/run_id to scope a bulk delete to one project instead of a
+                user's/agent's/run's entire memory set. Defaults to None.
         """
         user_id = _validate_and_trim_entity_id(user_id, "user_id")
         agent_id = _validate_and_trim_entity_id(agent_id, "agent_id")
         run_id = _validate_and_trim_entity_id(run_id, "run_id")
+        project = _validate_and_trim_entity_id(project, "project")
 
         filters: Dict[str, Any] = {}
         if user_id:
@@ -1902,6 +1944,8 @@ class Memory(MemoryBase):
             filters["agent_id"] = agent_id
         if run_id:
             filters["run_id"] = run_id
+        if project:
+            filters["project"] = project
 
         if not filters:
             raise ValueError(
@@ -1967,6 +2011,10 @@ class Memory(MemoryBase):
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
         new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+        if "status" not in new_metadata:
+            new_metadata["status"] = "active"
+        if "importance" not in new_metadata:
+            new_metadata["importance"] = 5
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -1983,7 +2031,232 @@ class Memory(MemoryBase):
             actor_id=new_metadata.get("actor_id"),
             role=new_metadata.get("role"),
         )
+        self._supersede_contradictions(memory_id, data, embeddings, new_metadata)
         return memory_id
+
+    def _llm_confirms_contradiction(self, existing_text: str, new_text: str) -> bool:
+        """Ask the LLM whether new_text actually contradicts existing_text.
+
+        Fails closed: any error, empty response, or unparseable JSON is
+        treated as "not a contradiction" -- vector similarity alone is not
+        reliable enough to silently hide a memory from search results, so
+        when the confirmation step can't run, the safer default is to leave
+        the existing memory visible rather than risk losing it.
+        """
+        try:
+            response = self.llm.generate_response(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _SUPERSEDE_CONTRADICTION_PROMPT.format(existing=existing_text, new=new_text),
+                    }
+                ],
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(remove_code_blocks(response))
+            return bool(parsed.get("contradicts"))
+        except Exception as exc:
+            logger.warning(f"Supersede LLM confirmation failed, treating as no-contradiction: {exc}")
+            return False
+
+    def _supersede_contradictions(self, memory_id, data, embeddings, metadata):
+        """Detect and mark outdated contradictory memories in the same tenant scope."""
+        search_filters = {
+            k: v for k, v in (metadata or {}).items()
+            if k in ("user_id", "agent_id", "run_id", "project") and v
+        }
+        try:
+            candidates = self.vector_store.search(
+                query=data,
+                vectors=embeddings,
+                top_k=5,
+                filters=search_filters,
+            )
+            for candidate in candidates:
+                cand_id = str(candidate.id)
+                cand_score = candidate.score or 0.0
+                cand_payload = candidate.payload or {}
+                if cand_id == memory_id:
+                    continue
+                if cand_score >= 0.85 and cand_payload.get("status") != "superseded":
+                    # Vector similarity alone flags candidates, it doesn't confirm
+                    # them -- two facts can be similarly worded without one
+                    # invalidating the other (rephrasing, unrelated-but-adjacent
+                    # facts). Only mark superseded when the LLM agrees this is an
+                    # actual contradiction, not just a near-duplicate.
+                    if not self._llm_confirms_contradiction(cand_payload.get("data", ""), data):
+                        continue
+                    updated_payload = deepcopy(cand_payload)
+                    updated_payload["status"] = "superseded"
+                    updated_payload["superseded_by_id"] = memory_id
+                    updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        self.vector_store.update(
+                            vector_id=cand_id,
+                            payload=updated_payload,
+                        )
+                        self.db.add_history(
+                            cand_id,
+                            updated_payload.get("data", ""),
+                            data,
+                            "SUPERSEDE",
+                            created_at=updated_payload.get("created_at"),
+                            updated_at=updated_payload["updated_at"],
+                        )
+                        logger.info(f"Memory {cand_id} marked as superseded by new memory {memory_id}")
+                    except Exception as err:
+                        logger.warning(f"Failed to mark memory {cand_id} as superseded: {err}")
+        except Exception as exc:
+            logger.warning(f"Supersede contradiction pass failed: {exc}")
+
+    def dream(self, user_id=None, agent_id=None, run_id=None, project=None, similarity_threshold=0.90, limit=100):
+        """Consolidate near-duplicate active memories within tenant scope into synthesized facts."""
+        filters = {k: v for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items() if v}
+        if not any(k in filters for k in ("user_id", "agent_id", "run_id")):
+            # `project` alone isn't enough: the synthesized memory dream()
+            # writes for each merge cluster is created via add(), which (like
+            # every memory in this codebase) must be owned by a user/agent/run
+            # -- project is stored as metadata, not an identity key. Without
+            # this, a project-only call passes an empty-filters check but
+            # still crashes the moment a merge cluster is found.
+            raise ValueError(
+                "At least one of 'user_id', 'agent_id', or 'run_id' is required to run dream "
+                "consolidation -- 'project' alone cannot own the synthesized memories it creates. "
+                "Combine 'project' with a user_id/agent_id/run_id to narrow scope within a project."
+            )
+        # get_all() takes entity ids nested inside filters={} (and top_k=, not
+        # limit=) -- it explicitly rejects them as top-level kwargs. The
+        # ValueError guard above already ensures user_id/agent_id/run_id is
+        # present, so this is always the get_all() path.
+        memories = self.get_all(filters=filters, top_k=limit)
+        raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
+        # get_all()'s formatted output nests status under metadata, not
+        # top-level -- _payload_is_superseded() and the "merged" check below
+        # both read top-level keys, so check metadata.status here instead.
+        active_memories = [
+            m for m in raw_list
+            if not _payload_is_superseded(m) and (m.get("metadata") or {}).get("status") != "merged"
+        ]
+
+        clusters = []
+        visited = set()
+
+        for mem in active_memories:
+            mem_id = mem.get("id")
+            if not mem_id or mem_id in visited:
+                continue
+            text = mem.get("memory", "")
+            if not text:
+                continue
+
+            embeddings = self.embedding_model.embed(text)
+            filters = {}
+            if user_id:
+                filters["user_id"] = user_id
+            if agent_id:
+                filters["agent_id"] = agent_id
+            if run_id:
+                filters["run_id"] = run_id
+            if project:
+                filters["project"] = project
+
+            try:
+                candidates = self.vector_store.search(
+                    query=text,
+                    vectors=embeddings,
+                    top_k=10,
+                    filters=filters,
+                )
+            except Exception:
+                candidates = []
+
+            cluster = [mem]
+            visited.add(mem_id)
+            for cand in candidates:
+                cand_id = str(cand.id)
+                cand_score = cand.score or 0.0
+                if cand_id != mem_id and cand_id not in visited and cand_score >= similarity_threshold:
+                    cand_mem = next((m for m in active_memories if m.get("id") == cand_id), None)
+                    if cand_mem:
+                        cluster.append(cand_mem)
+                        visited.add(cand_id)
+            if len(cluster) > 1:
+                clusters.append(cluster)
+
+        new_ids = []
+        merged_source_ids = []
+        for cluster in clusters:
+            texts = [c.get("memory", "") for c in cluster if c.get("memory")]
+            combined_text = " | ".join(texts)
+            # importance lives under metadata in get_all()'s formatted output,
+            # not top-level -- c.get("importance") always missed it.
+            importances = [
+                (c.get("metadata") or {}).get("importance")
+                for c in cluster
+                if isinstance((c.get("metadata") or {}).get("importance"), (int, float))
+            ]
+            avg_importance = int(round(sum(importances) / len(importances))) if importances else 6
+
+            synth_metadata = {"category": "auto_synthesis", "importance": avg_importance}
+            if project:
+                synth_metadata["project"] = project
+            # infer=False: combined_text is already a final, deterministic
+            # merge decision -- it must be stored verbatim, not fed back
+            # through the LLM extraction/dedup pipeline (which could re-split
+            # it, drop it as a duplicate/no-op, or leave it in an inconsistent
+            # state that isn't created via _create_memory).
+            add_res = self.add(
+                [{"role": "user", "content": combined_text}],
+                user_id=user_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                metadata=synth_metadata,
+                infer=False,
+            )
+            new_id = add_res.get("results", [{}])[0].get("id") if isinstance(add_res, dict) else None
+            if new_id:
+                new_ids.append(new_id)
+                for source_mem in cluster:
+                    s_id = source_mem.get("id")
+                    if not s_id:
+                        continue
+                    # source_mem is get_all()'s formatted representation
+                    # ("memory" key, nested "metadata") -- not the vector
+                    # store's actual storage shape ("data" key, flat fields).
+                    # Writing it straight to vector_store.update() would
+                    # overwrite the real payload and permanently blank out
+                    # the memory's content. Fetch the raw payload first, the
+                    # same way _supersede_contradictions() does via
+                    # candidate.payload.
+                    raw = self.vector_store.get(vector_id=s_id)
+                    if not raw or not raw.payload:
+                        logger.warning(f"Skipping merge-mark for {s_id}: raw payload not found")
+                        continue
+                    merged_source_ids.append(s_id)
+                    updated_payload = deepcopy(raw.payload)
+                    updated_payload["status"] = "merged"
+                    updated_payload["merged_into_id"] = new_id
+                    updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        self.vector_store.update(vector_id=s_id, payload=updated_payload)
+                        self.db.add_history(
+                            s_id,
+                            source_mem.get("memory", ""),
+                            combined_text,
+                            "MERGE",
+                            created_at=source_mem.get("created_at"),
+                            updated_at=updated_payload["updated_at"],
+                        )
+                    except Exception as err:
+                        logger.warning(f"Failed to update merged status for {s_id}: {err}")
+
+        return {
+            "processed": len(active_memories),
+            "clusters_merged": len(clusters),
+            "new_memories_created": len(new_ids),
+            "memories_merged": len(merged_source_ids),
+        }
+
 
     def _create_procedural_memory(self, messages, metadata=None, prompt=None):
         """
@@ -2905,6 +3178,7 @@ class AsyncMemory(MemoryBase):
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 20,
         show_expired: bool = False,
+        show_superseded: bool = False,
         **kwargs,
     ):
         """
@@ -2954,7 +3228,7 @@ class AsyncMemory(MemoryBase):
             )
 
         limit = top_k
-        fetch_limit = limit if show_expired else max(limit * 4, 60)
+        fetch_limit = limit if (show_expired and show_superseded) else max(limit * 4, 60)
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
@@ -2962,7 +3236,9 @@ class AsyncMemory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "async"}
         )
 
-        all_memories_result = await self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit)
+        all_memories_result = await self._get_all_from_vector_store(
+            effective_filters, fetch_limit, show_expired, limit, show_superseded=show_superseded
+        )
 
         if scale_threshold_notice:
             await display_scale_threshold_notice_async(self, "async", "get_all", *scale_threshold_notice)
@@ -2970,7 +3246,7 @@ class AsyncMemory(MemoryBase):
             await display_first_run_notice_async(self, "async", "get_all")
         return {"results": all_memories_result}
 
-    async def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None):
+    async def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, show_superseded=False):
         memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, top_k=limit)
 
         # Handle different vector store return formats by inspecting first element
@@ -3000,6 +3276,8 @@ class AsyncMemory(MemoryBase):
         formatted_memories = []
         for mem in actual_memories:
             if not show_expired and _payload_is_expired(mem.payload):
+                continue
+            if not show_superseded and _payload_is_superseded(mem.payload):
                 continue
             memory_item_dict = MemoryItem(
                 id=mem.id,
@@ -3034,6 +3312,7 @@ class AsyncMemory(MemoryBase):
         explain: bool = False,
         reference_date: Optional[Any] = None,
         show_expired: bool = False,
+        show_superseded: bool = False,
         **kwargs,
     ):
         """
@@ -3143,7 +3422,8 @@ class AsyncMemory(MemoryBase):
 
         search_start = time.perf_counter()
         original_memories = await self._search_vector_store(
-            query, effective_filters, limit, threshold, explain=explain, show_expired=show_expired
+            query, effective_filters, limit, threshold, explain=explain, show_expired=show_expired,
+            show_superseded=show_superseded
         )
         search_elapsed_seconds = time.perf_counter() - search_start
 
@@ -3279,7 +3559,7 @@ class AsyncMemory(MemoryBase):
                 return True
         return False
 
-    async def _search_vector_store(self, query, filters, limit, threshold=0.1, explain=False, show_expired=False):
+    async def _search_vector_store(self, query, filters, limit, threshold=0.1, explain=False, show_expired=False, show_superseded=False):
         if threshold is None:
             threshold = 0.1
 
@@ -3321,6 +3601,8 @@ class AsyncMemory(MemoryBase):
         for mem in semantic_results:
             payload = mem.payload if hasattr(mem, 'payload') else {}
             if not show_expired and _payload_is_expired(payload):
+                continue
+            if not show_superseded and _payload_is_superseded(payload):
                 continue
             mem_id = str(mem.id)
             candidates.append({
@@ -3532,7 +3814,7 @@ class AsyncMemory(MemoryBase):
             await display_first_run_notice_async(self, "async", "delete")
         return {"message": "Memory deleted successfully!"}
 
-    async def delete_all(self, user_id=None, agent_id=None, run_id=None):
+    async def delete_all(self, user_id=None, agent_id=None, run_id=None, project=None):
         """
         Delete all memories asynchronously.
 
@@ -3540,10 +3822,14 @@ class AsyncMemory(MemoryBase):
             user_id (str, optional): ID of the user to delete memories for. Defaults to None.
             agent_id (str, optional): ID of the agent to delete memories for. Defaults to None.
             run_id (str, optional): ID of the run to delete memories for. Defaults to None.
+            project (str, optional): Restrict deletion to memories tagged with this project.
+                Combine with user_id/agent_id/run_id to scope a bulk delete to one project
+                instead of a user's/agent's/run's entire memory set. Defaults to None.
         """
         user_id = _validate_and_trim_entity_id(user_id, "user_id")
         agent_id = _validate_and_trim_entity_id(agent_id, "agent_id")
         run_id = _validate_and_trim_entity_id(run_id, "run_id")
+        project = _validate_and_trim_entity_id(project, "project")
 
         filters = {}
         if user_id:
@@ -3552,6 +3838,8 @@ class AsyncMemory(MemoryBase):
             filters["agent_id"] = agent_id
         if run_id:
             filters["run_id"] = run_id
+        if project:
+            filters["project"] = project
 
         if not filters:
             raise ValueError(
@@ -3635,6 +3923,10 @@ class AsyncMemory(MemoryBase):
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
         new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+        if "status" not in new_metadata:
+            new_metadata["status"] = "active"
+        if "importance" not in new_metadata:
+            new_metadata["importance"] = 5
 
         await asyncio.to_thread(
             self.vector_store.insert,
@@ -3655,7 +3947,215 @@ class AsyncMemory(MemoryBase):
             role=new_metadata.get("role"),
         )
 
+        await self._supersede_contradictions(memory_id, data, embeddings, new_metadata)
         return memory_id
+
+    async def _llm_confirms_contradiction(self, existing_text: str, new_text: str) -> bool:
+        """Async counterpart of Memory._llm_confirms_contradiction. Fails closed --
+        see that method's docstring for why."""
+        try:
+            response = await asyncio.to_thread(
+                self.llm.generate_response,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _SUPERSEDE_CONTRADICTION_PROMPT.format(existing=existing_text, new=new_text),
+                    }
+                ],
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(remove_code_blocks(response))
+            return bool(parsed.get("contradicts"))
+        except Exception as exc:
+            logger.warning(f"Supersede LLM confirmation failed, treating as no-contradiction: {exc}")
+            return False
+
+    async def _supersede_contradictions(self, memory_id, data, embeddings, metadata):
+        """Detect and mark outdated contradictory memories asynchronously."""
+        search_filters = {
+            k: v for k, v in (metadata or {}).items()
+            if k in ("user_id", "agent_id", "run_id", "project") and v
+        }
+        try:
+            candidates = await asyncio.to_thread(
+                self.vector_store.search,
+                query=data,
+                vectors=embeddings,
+                top_k=5,
+                filters=search_filters,
+            )
+            for candidate in candidates:
+                cand_id = str(candidate.id)
+                cand_score = candidate.score or 0.0
+                cand_payload = candidate.payload or {}
+                if cand_id == memory_id:
+                    continue
+                if cand_score >= 0.85 and cand_payload.get("status") != "superseded":
+                    if not await self._llm_confirms_contradiction(cand_payload.get("data", ""), data):
+                        continue
+                    updated_payload = deepcopy(cand_payload)
+                    updated_payload["status"] = "superseded"
+                    updated_payload["superseded_by_id"] = memory_id
+                    updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        await asyncio.to_thread(
+                            self.vector_store.update,
+                            vector_id=cand_id,
+                            payload=updated_payload,
+                        )
+                        await asyncio.to_thread(
+                            self.db.add_history,
+                            cand_id,
+                            updated_payload.get("data", ""),
+                            data,
+                            "SUPERSEDE",
+                            created_at=updated_payload.get("created_at"),
+                            updated_at=updated_payload["updated_at"],
+                        )
+                        logger.info(f"Memory {cand_id} marked as superseded by new memory {memory_id}")
+                    except Exception as err:
+                        logger.warning(f"Failed to mark memory {cand_id} as superseded: {err}")
+        except Exception as exc:
+            logger.warning(f"Supersede contradiction pass failed: {exc}")
+
+    async def dream(self, user_id=None, agent_id=None, run_id=None, project=None, similarity_threshold=0.90, limit=100):
+        """Consolidate near-duplicate active memories within tenant scope into synthesized facts asynchronously."""
+        filters = {k: v for k, v in {"user_id": user_id, "agent_id": agent_id, "run_id": run_id, "project": project}.items() if v}
+        if not any(k in filters for k in ("user_id", "agent_id", "run_id")):
+            # See sync Memory.dream() for why 'project' alone is not sufficient.
+            raise ValueError(
+                "At least one of 'user_id', 'agent_id', or 'run_id' is required to run dream "
+                "consolidation -- 'project' alone cannot own the synthesized memories it creates. "
+                "Combine 'project' with a user_id/agent_id/run_id to narrow scope within a project."
+            )
+        # get_all() takes entity ids nested inside filters={} (and top_k=, not
+        # limit=) -- it explicitly rejects them as top-level kwargs. The
+        # ValueError guard above already ensures user_id/agent_id/run_id is
+        # present, so this is always the get_all() path.
+        memories = await self.get_all(filters=filters, top_k=limit)
+        raw_list = memories.get("results", []) if isinstance(memories, dict) else memories
+        # get_all()'s formatted output nests status under metadata, not
+        # top-level -- _payload_is_superseded() and the "merged" check below
+        # both read top-level keys, so check metadata.status here instead.
+        active_memories = [
+            m for m in raw_list
+            if not _payload_is_superseded(m) and (m.get("metadata") or {}).get("status") != "merged"
+        ]
+
+        clusters = []
+        visited = set()
+
+        for mem in active_memories:
+            mem_id = mem.get("id")
+            if not mem_id or mem_id in visited:
+                continue
+            text = mem.get("memory", "")
+            if not text:
+                continue
+
+            embeddings = await self.embedding_model.aembed(text)
+            filters = {}
+            if user_id:
+                filters["user_id"] = user_id
+            if agent_id:
+                filters["agent_id"] = agent_id
+            if run_id:
+                filters["run_id"] = run_id
+            if project:
+                filters["project"] = project
+
+            try:
+                candidates = await asyncio.to_thread(
+                    self.vector_store.search,
+                    query=text,
+                    vectors=embeddings,
+                    top_k=10,
+                    filters=filters,
+                )
+            except Exception:
+                candidates = []
+
+            cluster = [mem]
+            visited.add(mem_id)
+            for cand in candidates:
+                cand_id = str(cand.id)
+                cand_score = cand.score or 0.0
+                if cand_id != mem_id and cand_id not in visited and cand_score >= similarity_threshold:
+                    cand_mem = next((m for m in active_memories if m.get("id") == cand_id), None)
+                    if cand_mem:
+                        cluster.append(cand_mem)
+                        visited.add(cand_id)
+            if len(cluster) > 1:
+                clusters.append(cluster)
+
+        new_ids = []
+        merged_source_ids = []
+        for cluster in clusters:
+            texts = [c.get("memory", "") for c in cluster if c.get("memory")]
+            combined_text = " | ".join(texts)
+            # importance lives under metadata in get_all()'s formatted output,
+            # not top-level -- c.get("importance") always missed it.
+            importances = [
+                (c.get("metadata") or {}).get("importance")
+                for c in cluster
+                if isinstance((c.get("metadata") or {}).get("importance"), (int, float))
+            ]
+            avg_importance = int(round(sum(importances) / len(importances))) if importances else 6
+
+            synth_metadata = {"category": "auto_synthesis", "importance": avg_importance}
+            if project:
+                synth_metadata["project"] = project
+            # infer=False: combined_text is already a final, deterministic
+            # merge decision -- it must be stored verbatim, not fed back
+            # through the LLM extraction/dedup pipeline.
+            add_res = await self.add(
+                [{"role": "user", "content": combined_text}],
+                user_id=user_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                metadata=synth_metadata,
+                infer=False,
+            )
+            new_id = add_res.get("results", [{}])[0].get("id") if isinstance(add_res, dict) else None
+            if new_id:
+                new_ids.append(new_id)
+                for source_mem in cluster:
+                    s_id = source_mem.get("id")
+                    if not s_id:
+                        continue
+                    # source_mem is get_all()'s formatted representation, not
+                    # the vector store's raw storage shape -- see sync
+                    # Memory.dream() for why this must be re-fetched raw.
+                    raw = await asyncio.to_thread(self.vector_store.get, vector_id=s_id)
+                    if not raw or not raw.payload:
+                        logger.warning(f"Skipping merge-mark for {s_id}: raw payload not found")
+                        continue
+                    merged_source_ids.append(s_id)
+                    updated_payload = deepcopy(raw.payload)
+                    updated_payload["status"] = "merged"
+                    updated_payload["merged_into_id"] = new_id
+                    updated_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        await asyncio.to_thread(self.vector_store.update, vector_id=s_id, payload=updated_payload)
+                        await asyncio.to_thread(
+                            self.db.add_history,
+                            s_id,
+                            source_mem.get("memory", ""),
+                            combined_text,
+                            "MERGE",
+                            created_at=source_mem.get("created_at"),
+                            updated_at=updated_payload["updated_at"],
+                        )
+                    except Exception as err:
+                        logger.warning(f"Failed to update merged status for {s_id}: {err}")
+
+        return {
+            "processed": len(active_memories),
+            "clusters_merged": len(clusters),
+            "new_memories_created": len(new_ids),
+            "memories_merged": len(merged_source_ids),
+        }
+
 
     async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None):
         """

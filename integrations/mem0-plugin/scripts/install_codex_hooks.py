@@ -45,7 +45,7 @@ OWNER_MARKER = "mem0-plugin"
 
 def load_template() -> dict:
     raw = TEMPLATE_FILE.read_text()
-    raw = raw.replace("${PLUGIN_ROOT}", str(PLUGIN_ROOT))
+    raw = raw.replace("${PLUGIN_ROOT}", str(PLUGIN_ROOT).replace("\\", "/"))
     return json.loads(raw)
 
 
@@ -94,7 +94,7 @@ def feature_flag_enabled() -> bool:
     content = CONFIG_FILE.read_text()
     for line in content.splitlines():
         stripped = line.split("#", 1)[0].strip().replace(" ", "")
-        if stripped == "codex_hooks=true":
+        if stripped in ("codex_hooks=true", "hooks=true"):
             return True
     return False
 
@@ -127,17 +127,9 @@ def main() -> int:
         print(f"Removed Mem0 hooks from {HOOKS_FILE}")
         return 0
 
-    # Codex lifecycle hooks register .sh paths directly in ~/.codex/hooks.json.
-    # On native Windows .sh has no default handler, so Codex spawning a hook
-    # triggers "Open With" dialogs (one OpenWith.exe per event). See #5243.
+    # On Windows, we use the command_windows key to run hooks via native Python.
     if platform.system() == "Windows":
-        print(
-            "Codex lifecycle hooks register .sh scripts directly, which Windows\n"
-            "cannot execute without a bash interpreter on PATH. Re-run this\n"
-            "installer from WSL or Git Bash, or use Mem0 via MCP / Direct tools\n",
-            file=sys.stderr,
-        )
-        return 2
+        print("Configuring Mem0 hooks for Windows using command_windows Python wrapper...")
 
     if not TEMPLATE_FILE.exists():
         print(f"error: template not found at {TEMPLATE_FILE}", file=sys.stderr)

@@ -4,12 +4,15 @@ import * as React from "react";
 import Link from "next/link";
 import {
   Activity,
+  Brain,
   ChartLine,
   ChevronDown,
+  Clock,
   FolderInput,
   GalleryVerticalEnd,
   KeyRound,
   Settings,
+  Sparkles,
   Tags,
   Users,
   WebhookIcon,
@@ -76,10 +79,34 @@ export function MainNav({
                     active: pathname === "/dashboard/memories",
                   },
                   {
+                    title: "Scoring Debugger",
+                    url: "/dashboard/scoring-debugger",
+                    icon: Brain,
+                    active: pathname === "/dashboard/scoring-debugger",
+                  },
+                  {
+                    title: "Dream",
+                    url: "/dashboard/dream",
+                    icon: Sparkles,
+                    active: pathname === "/dashboard/dream" || pathname === "/dashboard/contradictions",
+                  },
+                  {
                     title: "Entities",
                     url: "/dashboard/entities",
                     icon: Users,
                     active: pathname === "/dashboard/entities",
+                  },
+                  {
+                    title: "Timeline",
+                    url: "/dashboard/timeline",
+                    icon: Clock,
+                    active: pathname === "/dashboard/timeline",
+                  },
+                  {
+                    title: "Export",
+                    url: "/dashboard/export",
+                    icon: FolderInput,
+                    active: pathname === "/dashboard/export",
                   },
                 ].map((item) => (
                   <SidebarMenuItem key={item.title}>
@@ -144,11 +171,6 @@ export function MainNav({
                       title: "Analytics",
                       url: "/dashboard/analytics",
                       icon: ChartLine,
-                    },
-                    {
-                      title: "Export",
-                      url: "/dashboard/export",
-                      icon: FolderInput,
                     },
                   ].map((item) => (
                     <SidebarMenuItem key={item.title}>

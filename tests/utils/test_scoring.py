@@ -144,6 +144,8 @@ class TestScoreAndRank:
             "semantic_score": 0.8,
             "bm25_score": 0.6,
             "entity_boost": 0.3,
+            "importance_score": 0.0,
+            "recency_score": 0.0,
             "raw_score": pytest.approx(1.7),
             "max_possible_score": 2.5,
             "final_score": pytest.approx(0.68),
@@ -159,3 +161,54 @@ class TestScoreAndRank:
 class TestEntityBoostWeight:
     def test_weight_value(self):
         assert ENTITY_BOOST_WEIGHT == 0.5
+
+
+class TestImportanceAndRecencyScoring:
+    def test_importance_weighting(self):
+        from mem0.utils.scoring import score_and_rank
+
+        results = [{"id": "a", "score": 0.8, "payload": {"importance": 10}}]
+        scored = score_and_rank(results, {}, {}, threshold=0.1, top_k=10, use_recency_decay=False, explain=True)
+        assert len(scored) == 1
+        # max_possible = 1.0 (semantic) + 0.3 (importance) = 1.3
+        # raw = 0.8 + (1.0 * 0.3) = 1.1
+        # final = 1.1 / 1.3
+        expected = 1.1 / 1.3
+        assert scored[0]["score"] == pytest.approx(expected)
+        assert scored[0]["score_details"]["importance_score"] == 1.0
+
+    def test_recency_decay_scoring(self):
+        from datetime import datetime, timezone
+        from mem0.utils.scoring import compute_recency_score, score_and_rank
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        score = compute_recency_score(now_iso, half_life_days=30.0)
+        assert score > 0.99  # Brand new memory -> ~1.0
+
+        results = [{"id": "a", "score": 0.8, "payload": {"created_at": now_iso}}]
+        scored = score_and_rank(results, {}, {}, threshold=0.1, top_k=10, use_recency_decay=True, explain=True)
+        assert len(scored) == 1
+        assert scored[0]["score_details"]["recency_score"] > 0.95
+
+    def test_max_possible_is_consistent_across_candidates_in_one_call(self):
+        """max_possible must be computed once for the whole batch, not
+        per-candidate -- two candidates with identical semantic/bm25/entity
+        signals must get the identical denominator even if only one of them
+        happens to carry an importance field, or their relative ranking
+        would be distorted by incidental payload completeness rather than
+        actual relevance."""
+        from mem0.utils.scoring import score_and_rank
+
+        results = [
+            {"id": "has_importance", "score": 0.8, "payload": {"importance": 8}},
+            {"id": "no_importance", "score": 0.8, "payload": {}},
+        ]
+        scored = score_and_rank(results, {}, {}, threshold=0.1, top_k=10, use_recency_decay=False, explain=True)
+        assert len(scored) == 2
+        max_possibles = {r["id"]: r["score_details"]["max_possible_score"] for r in scored}
+        assert max_possibles["has_importance"] == max_possibles["no_importance"]
+        # The candidate missing importance gets a neutral 0.5, not 0.0 --
+        # it isn't penalized just for lacking the field.
+        no_importance_result = next(r for r in scored if r["id"] == "no_importance")
+        assert no_importance_result["score_details"]["importance_score"] == 0.5
+

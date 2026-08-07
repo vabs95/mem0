@@ -214,6 +214,9 @@ docker-compose up                  # starts all 3 services
 - **Framework:** FastAPI with uvicorn (auto-reload in dev)
 - **Services:** PostgreSQL with pgvector, Neo4j 5.x with APOC plugin
 - **Hot reload:** Dev Dockerfile mounts `server/` and `mem0/` for live changes
+- **Imports are flat, not package-qualified:** `server/`'s modules import each other as `from auth import ...`, `from models import ...` (not `from server.auth import ...`), matching how they run in the container. A `tests/test_server_*.py` file that needs them must add `server/` to `sys.path` itself at import time — don't rely on another test file having already done this earlier in the same pytest session; each test file should be runnable standalone (`pytest tests/test_server_foo.py` on its own).
+- **`make lint` only runs `ruff check`, not `ruff format`.** The most common way to trip it in `tests/test_server_*.py` is `E402` from the `sys.path.insert` pattern above — put imports that don't need `server/` on the path before it, and add `# noqa: E402` to the ones that do.
+- **New REST endpoints must be added to `docs/open-source/features/rest-api.mdx`'s endpoint reference table.** It's the only place the self-hosted REST API surface is documented for users, and it's easy to forget since it isn't co-located with the router code.
 
 ### Documentation (`docs/`)
 
@@ -261,8 +264,16 @@ python -m benchmarks.beam.run --project-name my-test --backend cloud --mem0-api-
 | `get_all(*, user_id, agent_id, run_id, limit)` | List all memories |
 | `update(memory_id, data)` | Update a memory |
 | `delete(memory_id)` | Delete a memory |
-| `delete_all(*, user_id, agent_id, run_id)` | Delete all memories |
+| `delete_all(*, user_id, agent_id, run_id, project)` | Delete all memories |
 | `history(memory_id)` | Get change history for a memory |
+
+### Memory Scoring & Supersede Contradiction Lifecycle
+
+- **Hybrid Search Scoring (`mem0.utils.scoring.score_and_rank`)**:
+  Combines Cosine Vector Similarity, BM25 Keyword Search, Entity Boosts, Importance Rating (1-10 scale), and Exponential Recency Time Decay ($\exp(-\Delta t / 30.0)$ days).
+  $$\text{FinalScore} = \min\left(1.0, \, \frac{\text{VectorSim} + \text{BM25} + \text{EntityBoost} + 0.3 \cdot \text{Importance} + 0.2 \cdot \text{Recency}}{\text{MaxPossible}}\right)$$
+- **Supersede Contradiction Engine**:
+  On memory addition (`add()`), existing vector-similar facts ($\text{sim} \ge 0.85$) within tenant scope are automatically marked as `status = "superseded"` with `superseded_by_id` set to the new memory ID. Superseded memories are hidden from `search()` and `get_all()` by default.
 
 ### TypeScript
 
@@ -310,6 +321,9 @@ python -m benchmarks.beam.run --project-name my-test --backend cloud --mem0-api-
   - Root SDK: line length **120**
   - Python CLI: line length **100** with extended rule set (UP, B, SIM, RUF)
 - **isort** with `profile = "black"` for import sorting.
+- **Comments state the current durable invariant, not a debugging narrative.** Explain *why* the code has to work this way (a constraint, a race, a library limitation), not that a specific past run/session/incident revealed it. Comments and docstrings are permanent documentation; incident narration belongs in the commit message or PR description, not the code.
+- **Reuse in-process calls and pooled HTTP clients over spawning subprocesses.** Don't `subprocess.run([sys.executable, "-c", "<inline code>"])` to call an already-importable local module — import and call it directly. Don't open a new `httpx.Client()`/`urllib` connection per call in a hot path — keep a module-level pooled/reused client instead.
+- **Sanitize identifiers from external input before using them in filesystem paths** (hook stdin JSON, request bodies, etc.), even when the current caller is trusted — cheap defense-in-depth against a future caller changing that assumption.
 
 ### TypeScript Conventions
 

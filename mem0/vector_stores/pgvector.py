@@ -215,6 +215,8 @@ class PGVector(VectorStoreBase):
         collections = self.list_cols()
         if self.collection_name not in collections:
             self.create_col()
+        else:
+            self._ensure_status_index()
         self._collection_ensured = True
 
     @contextmanager
@@ -300,6 +302,28 @@ class PGVector(VectorStoreBase):
                 USING gin(to_tsvector('simple', payload->>'text_lemmatized'));
                 """).format(
                     sql.Identifier(f"{self.collection_name}_text_lemmatized_idx"),
+                    self._col(),
+                )
+            )
+        self._ensure_status_index()
+
+    def _ensure_status_index(self) -> None:
+        """Btree expression index on payload->>'status'.
+
+        Called unconditionally from _ensure_collection (not just create_col),
+        so it also self-applies to collections that already existed before
+        this index was introduced -- create_col() only runs once, the first
+        time a collection is created, and never again for a table that
+        already exists. Every get_all()/search() call filters out
+        superseded/merged memories; without this index that filter runs
+        client-side in Python after fetching the full unfiltered result set.
+        """
+        with self._get_cursor(commit=True) as cur:
+            cur.execute(
+                sql.SQL("""
+                CREATE INDEX IF NOT EXISTS {} ON {} ((payload->>'status'));
+                """).format(
+                    sql.Identifier(f"{self.collection_name}_status_idx"),
                     self._col(),
                 )
             )

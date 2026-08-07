@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
-import { format } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { EmptyState } from "@/components/self-hosted/empty-state";
@@ -19,39 +19,145 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { UpgradeBanner } from "@/components/self-hosted/upgrade-banner";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import { getErrorMessage } from "@/lib/error-message";
 import { api } from "@/utils/api";
-import { MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
+import { ENTITY_ENDPOINTS, MEMORY_ENDPOINTS, TIMELINE_ENDPOINTS } from "@/utils/api-endpoints";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { Memory } from "@/types/api";
+import { Entity, Memory, TimelineEvent } from "@/types/api";
+import { subDays } from "date-fns";
+import { DateRangePicker, DateRangeSelection } from "@/components/shared/date-range-picker";
 
 const PAGE_SIZE = 20;
 // Keep in sync with ALL_MEMORIES_LIMIT in server/main.py.
 const MEMORY_FETCH_LIMIT = 1000;
+const ALL_VALUES = "__all__";
+
+const DATE_RANGES = {
+  all: { label: "All time", days: null },
+  "1": { label: "Last 24 hours", days: 1 },
+  "7": { label: "Last 7 days", days: 7 },
+  "30": { label: "Last 30 days", days: 30 },
+} as const;
+
+type SortableKey = "memory" | "created_at";
 
 export default function MemoriesPage() {
-  const [userId, setUserId] = useState("");
+  const [userId, setUserId] = useState(ALL_VALUES);
+  const [agentId, setAgentId] = useState(ALL_VALUES);
+  const [runId, setRunId] = useState(ALL_VALUES);
+  const [project, setProject] = useState(ALL_VALUES);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateRange, setDateRange] = useState<DateRangeSelection>({ mode: "preset", key: "all" });
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
   const [page, setPage] = useState(0);
+  const [sortKey, setSortKey] = useState<SortableKey>("created_at");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
 
+  const { data: entities = [] } = useApiQuery<Entity[]>(
+    async () => {
+      const res = await api.get<Entity[]>(ENTITY_ENDPOINTS.BASE);
+      return res.data ?? [];
+    },
+    { errorToast: "Failed to load entities", initialData: [] },
+  );
+  const byType = (type: Entity["type"]) =>
+    entities.filter((e) => e.type === type).map((e) => e.id).sort();
+
   const {
-    data: memories = [],
+    data: rawMemories = [],
     isLoading,
     refetch,
   } = useApiQuery<Memory[]>(
     async () => {
-      const params = userId.trim()
-        ? { user_id: userId.trim(), top_k: MEMORY_FETCH_LIMIT }
-        : { top_k: MEMORY_FETCH_LIMIT };
+      const params = {
+        user_id: userId === ALL_VALUES ? undefined : userId,
+        agent_id: agentId === ALL_VALUES ? undefined : agentId,
+        run_id: runId === ALL_VALUES ? undefined : runId,
+        project: project === ALL_VALUES ? undefined : project,
+        top_k: MEMORY_FETCH_LIMIT,
+        // Always fetch superseded/merged too -- GET /memories excludes them
+        // by default, and the Status filter below needs them client-side to
+        // filter down to, the same way the other filters on this page work.
+        show_superseded: true,
+      };
       const res = await api.get(MEMORY_ENDPOINTS.BASE, { params });
       const raw = res.data?.results ?? res.data ?? [];
       return Array.isArray(raw) ? raw : [];
     },
     { errorToast: "Failed to load memories", initialData: [] },
   );
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setPage(0);
+    void refetch();
+  }, [userId, agentId, runId, project]);
+
+  const filteredByStatus =
+    statusFilter === "all"
+      ? rawMemories
+      : rawMemories.filter((m) => (m.metadata?.status ?? "active") === statusFilter);
+
+  const filteredByDate = filteredByStatus.filter((m) => {
+    if (dateRange.mode === "preset") {
+      if (dateRange.key === "all") return true;
+      if (!m.created_at) return false;
+      const range = DATE_RANGES[dateRange.key as keyof typeof DATE_RANGES];
+      return range.days ? new Date(m.created_at) >= subDays(new Date(), range.days) : true;
+    }
+    if (!m.created_at) return false;
+    const created = new Date(m.created_at);
+    return created >= dateRange.from && created <= dateRange.to;
+  });
+
+  const memories = [...filteredByDate].sort((a, b) => {
+    const dir = sortDirection === "asc" ? 1 : -1;
+    if (sortKey === "memory") {
+      return a.memory.localeCompare(b.memory) * dir;
+    }
+    const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return (aTime - bTime) * dir;
+  });
+
+  const handleSortChange = (key: keyof Memory) => {
+    if (key !== "memory" && key !== "created_at") return;
+    if (sortKey === key) {
+      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDirection("asc");
+    }
+  };
+
+  const {
+    data: sourceEvents = [],
+    refetch: refetchSourceEvents,
+  } = useApiQuery<TimelineEvent[]>(
+    async () => {
+      if (!selectedMemory) return [];
+      const res = await api.get<TimelineEvent[]>(
+        TIMELINE_ENDPOINTS.FOR_MEMORY(selectedMemory.id),
+      );
+      return res.data ?? [];
+    },
+    { initialData: [] },
+  );
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (selectedMemory) void refetchSourceEvents();
+  }, [selectedMemory?.id]);
 
   const totalPages = Math.ceil(memories.length / PAGE_SIZE);
   const paginatedMemories = memories.slice(
@@ -81,6 +187,7 @@ export default function MemoriesPage() {
       key: "memory" as keyof Memory,
       label: "Content",
       width: 400,
+      sortable: true,
       render: (value: string) => (
         <span className="line-clamp-2 text-sm">{value}</span>
       ),
@@ -91,6 +198,7 @@ export default function MemoriesPage() {
       key: "created_at" as keyof Memory,
       label: "Created",
       width: 120,
+      sortable: true,
       render: (value: string) =>
         value ? format(new Date(value), "MMM d, yyyy") : "--",
     },
@@ -110,19 +218,71 @@ export default function MemoriesPage() {
         />
       )}
 
-      <div className="flex gap-3">
-        <Input
-          placeholder="Filter by User ID (optional)"
-          value={userId}
-          onChange={(e) => setUserId(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              setPage(0);
-              refetch();
-            }
-          }}
-          className="w-64"
-        />
+      <div className="flex flex-wrap gap-2">
+        <Select value={userId} onValueChange={setUserId}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All users" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUES}>All users</SelectItem>
+            {byType("user").map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={project} onValueChange={setProject}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All projects" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUES}>All projects</SelectItem>
+            {byType("project").map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={agentId} onValueChange={setAgentId}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All agents" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUES}>All agents</SelectItem>
+            {byType("agent").map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={runId} onValueChange={setRunId}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All runs" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUES}>All runs</SelectItem>
+            {byType("run").map((id) => (
+              <SelectItem key={id} value={id}>
+                {id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-[140px]">
+            <SelectValue placeholder="All statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="superseded">Superseded</SelectItem>
+            <SelectItem value="merged">Merged</SelectItem>
+          </SelectContent>
+        </Select>
+        <DateRangePicker presets={DATE_RANGES} value={dateRange} onChange={setDateRange} className="w-[180px]" />
       </div>
 
       {isLoading ? (
@@ -160,6 +320,9 @@ export default function MemoriesPage() {
                   ? "bg-surface-default-tertiary"
                   : undefined
               }
+              sortKey={sortKey}
+              sortDirection={sortDirection}
+              onSortChange={handleSortChange}
             />
           </Card>
           {totalPages > 1 && (
@@ -249,6 +412,26 @@ export default function MemoriesPage() {
                   </div>
                 )}
               </div>
+              {sourceEvents.length > 0 && (
+                <div className="space-y-1">
+                  <Label className="text-xs text-onSurface-default-tertiary">
+                    Produced by
+                  </Label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline">{sourceEvents[0].event_type}</Badge>
+                    {sourceEvents[0].category && (
+                      <Badge variant="outline" className="capitalize">
+                        {sourceEvents[0].category.replace(/_/g, " ")}
+                      </Badge>
+                    )}
+                    <span className="text-xs text-onSurface-default-tertiary">
+                      {formatDistanceToNow(new Date(sourceEvents[0].created_at), {
+                        addSuffix: true,
+                      })}
+                    </span>
+                  </div>
+                </div>
+              )}
               <Button
                 variant="outline"
                 size="sm"

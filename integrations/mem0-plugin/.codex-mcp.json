@@ -1,8 +1,15 @@
 {
   "mcpServers": {
     "mem0": {
+      "type": "http",
       "url": "https://mcp.mem0.ai/mcp",
-      "bearer_token_env_var": "MEM0_API_KEY"
+      "bearer_token_env_var": "MEM0_API_KEY",
+      "http_headers": {
+        "X-Source-Agent": "codex"
+      },
+      "env_http_headers": {
+        "X-User-Id": "MEM0_USER_ID"
+      }
     }
   }
 }

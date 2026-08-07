@@ -13,7 +13,7 @@
           {
             "name": "mem0-session-start",
             "type": "command",
-            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} bash ${extensionPath}/scripts/on_session_start.sh 2>/dev/null || true"
+            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} python3 ${extensionPath}/scripts/_handlers.py session_start 2>/dev/null || true"
           }
         ]
       }
@@ -24,7 +24,7 @@
           {
             "name": "mem0-user-prompt",
             "type": "command",
-            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} bash ${extensionPath}/scripts/on_user_prompt.sh 2>/dev/null || true",
+            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} python3 ${extensionPath}/scripts/_handlers.py user_prompt 2>/dev/null || true",
             "timeout": 8
           }
         ]
@@ -37,7 +37,7 @@
           {
             "name": "mem0-block-memory-write",
             "type": "command",
-            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} bash ${extensionPath}/scripts/block_memory_write.sh"
+            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} python3 ${extensionPath}/scripts/_handlers.py block_write"
           }
         ]
       },
@@ -58,7 +58,7 @@
           {
             "name": "mem0-file-context",
             "type": "command",
-            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} bash ${extensionPath}/scripts/on_file_read.sh",
+            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} python3 ${extensionPath}/scripts/_handlers.py on_file_read",
             "timeout": 5
           }
         ]
@@ -70,7 +70,7 @@
           {
             "name": "mem0-session-summary",
             "type": "command",
-            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} bash ${extensionPath}/scripts/on_stop.sh",
+            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} python3 ${extensionPath}/scripts/_handlers.py stop",
             "timeout": 30
           }
         ]
@@ -83,7 +83,7 @@
           {
             "name": "mem0-post-tool",
             "type": "command",
-            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} bash ${extensionPath}/scripts/on_post_tool_use.sh",
+            "command": "ANTIGRAVITY_PLUGIN_ROOT=${extensionPath} CLAUDE_PLUGIN_ROOT=${extensionPath} python3 ${extensionPath}/scripts/_handlers.py post_tool_use",
             "timeout": 3
           }
         ]

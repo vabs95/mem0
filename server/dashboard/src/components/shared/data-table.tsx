@@ -1,5 +1,5 @@
 import { ReactNode } from "react";
-import { LucideIcon } from "lucide-react";
+import { ChevronDown, ChevronUp, LucideIcon } from "lucide-react";
 
 interface Column<T> {
   key: keyof T;
@@ -11,6 +11,7 @@ interface Column<T> {
   align?: "left" | "center" | "right";
   cellVariant?: "default" | "flush";
   headerVariant?: "default" | "check";
+  sortable?: boolean;
 }
 
 interface DataTableProps<T> {
@@ -20,6 +21,12 @@ interface DataTableProps<T> {
   getRowKey?: (row: T, rowIndex: number) => string | number;
   onRowClick?: (row: T, rowIndex: number) => void;
   getRowClassName?: (row: T, rowIndex: number) => string | undefined;
+  /** Sorting the `data` array itself is the caller's job (each page already
+   * holds its filtered rows in state/memo) -- DataTable stays presentational
+   * and just reports which column/direction was clicked. */
+  sortKey?: keyof T;
+  sortDirection?: "asc" | "desc";
+  onSortChange?: (key: keyof T) => void;
 }
 
 const classes = {
@@ -49,6 +56,9 @@ export function DataTable<T>({
   getRowKey,
   onRowClick,
   getRowClassName,
+  sortKey,
+  sortDirection,
+  onSortChange,
 }: DataTableProps<T>) {
   const minHeight = data.length > 0 ? Math.max(76, 38 + data.length * 38) : 100;
   // Proportional column widths so table fits container (width numbers treated as relative weights)
@@ -135,17 +145,36 @@ export function DataTable<T>({
                   ? "justify-end"
                   : "";
 
+              const isSorted = column.sortable && sortKey === column.key;
+              const SortIcon = isSorted && sortDirection === "asc" ? ChevronUp : ChevronDown;
+
               return (
                 <th key={index} className={headerCellClassName}>
                   <div className="flex h-full min-w-0 items-stretch justify-between">
-                    <div
-                      className={`flex min-w-0 flex-1 items-center gap-2 overflow-hidden ${flexAlignment}`}
-                    >
-                      {Icon && <Icon className="size-4 shrink-0" />}
-                      <span className="truncate font-[Fustat] text-sm font-semibold leading-[18px] text-onSurface-default-secondary">
-                        {column.label}
-                      </span>
-                    </div>
+                    {column.sortable ? (
+                      <button
+                        type="button"
+                        onClick={() => onSortChange?.(column.key)}
+                        className={`flex min-w-0 flex-1 items-center gap-1 overflow-hidden ${flexAlignment} hover:text-onSurface-default-primary`}
+                      >
+                        {Icon && <Icon className="size-4 shrink-0" />}
+                        <span className="truncate font-[Fustat] text-sm font-semibold leading-[18px] text-onSurface-default-secondary">
+                          {column.label}
+                        </span>
+                        <SortIcon
+                          className={`size-3.5 shrink-0 ${isSorted ? "" : "opacity-30"}`}
+                        />
+                      </button>
+                    ) : (
+                      <div
+                        className={`flex min-w-0 flex-1 items-center gap-2 overflow-hidden ${flexAlignment}`}
+                      >
+                        {Icon && <Icon className="size-4 shrink-0" />}
+                        <span className="truncate font-[Fustat] text-sm font-semibold leading-[18px] text-onSurface-default-secondary">
+                          {column.label}
+                        </span>
+                      </div>
+                    )}
                     {!isLastColumn && (
                       <div className={classes.tableHeaderDivider} />
                     )}
@@ -176,7 +205,9 @@ export function DataTable<T>({
                     <div className="min-w-0 overflow-hidden">
                       {column.render
                         ? column.render(value, row)
-                        : String(value)}
+                        : value === null || value === undefined || value === ""
+                          ? <span className="text-onSurface-default-tertiary">—</span>
+                          : String(value)}
                     </div>
                   </td>
                 );

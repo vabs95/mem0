@@ -10,7 +10,7 @@ memory tagged metadata.type=compact_summary.
 Input:  JSON on stdin with transcript_path, session_id, source
 Output: stderr logs only (exit 0 always -- must not block)
 
-Spawned in the background by on_session_start.sh; the user-facing
+Spawned in the background by _handlers.py's cmd_session_start; the user-facing
 bootstrap text continues without waiting on the network.
 """
 
@@ -19,12 +19,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import urllib.error
-import urllib.request
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _api import add_memory
 from _identity import resolve_api_key, resolve_user_id
 from _project import resolve_branch, resolve_project_id
 
@@ -44,7 +45,6 @@ if os.environ.get("MEM0_DEBUG"):
     except OSError:
         pass
 
-API_URL = "https://api.mem0.ai"
 MAX_TAIL_LINES = 2000
 MAX_SUMMARY_CHARS = 50000
 # Compact summaries describe a single session's state -- stale after a quarter.
@@ -101,6 +101,7 @@ def store_summary(api_key: str, summary: str, user_id: str, session_id: str, pro
         "type": "compact_summary",
         "source": "session-start-compact",
         "session_id": session_id,
+        "importance": 5,
     }
     if branch:
         metadata["branch"] = branch
@@ -116,23 +117,13 @@ def store_summary(api_key: str, summary: str, user_id: str, session_id: str, pro
         "expiration_date": expires,
     }
 
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        f"{API_URL}/v3/memories/add/",
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Token {api_key}",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status in (200, 201):
-                log.info("Compact summary stored")
-                return True
-            log.warning("API returned status %d", resp.status)
-            return False
+        status, _result = add_memory(api_key, body, timeout=15)
+        if status in (200, 201):
+            log.info("Compact summary stored")
+            return True
+        log.warning("API returned status %d", status)
+        return False
     except urllib.error.URLError as e:
         log.warning("API call failed: %s", e)
         return False
@@ -176,7 +167,11 @@ def main():
         return
 
     marker_dir = os.path.expanduser("~/.mem0")
-    marker_file = os.path.join(marker_dir, f"compact_captured_{session_id}")
+    # session_id comes from hook stdin JSON -- sanitize before using it in a
+    # filesystem path in case a future caller ever feeds it something other
+    # than the harness's own UUID.
+    safe_session_id = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
+    marker_file = os.path.join(marker_dir, f"compact_captured_{safe_session_id}")
     if session_id and os.path.isfile(marker_file):
         log.info("Compact summary already captured for session %s — skipping", session_id)
         return

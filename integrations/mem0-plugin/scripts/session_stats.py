@@ -2,7 +2,9 @@
 """Session stats tracker for mem0 plugin.
 
 Tracks memory adds/searches per session.
-Uses /tmp/mem0_session_stats_$USER.json (single file per user, reset on init).
+Uses /tmp/mem0_session_stats_<user>_<project>.json -- scoped by both, not
+just $USER, so concurrent sessions in different projects for the same user
+don't share (and clobber) each other's counters.
 
 Usage:
   python session_stats.py init            # reset for new session
@@ -16,15 +18,31 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime
 
-STATS_FILE = f"/tmp/mem0_session_stats_{os.environ.get('USER', 'default')}.json"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
+from _identity import resolve_user_id  # noqa: E402
+from _project import resolve_project_id  # noqa: E402
 
 
-def _load() -> dict:
-    if os.path.isfile(STATS_FILE):
+def _stats_file_for(user_id: str, project_id: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"mem0_session_stats_{user_id}_{project_id}.json")
+
+
+def _stats_file() -> str:
+    return _stats_file_for(resolve_user_id(), resolve_project_id())
+
+
+STATS_FILE = _stats_file()
+
+
+def _load_from(path: str) -> dict:
+    if os.path.isfile(path):
         try:
-            with open(STATS_FILE) as f:
+            with open(path) as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
@@ -37,6 +55,10 @@ def _load() -> dict:
     }
 
 
+def _load() -> dict:
+    return _load_from(STATS_FILE)
+
+
 def _save(stats: dict) -> None:
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
@@ -46,14 +68,16 @@ MAX_RECENT_IDS = 50
 
 
 def init() -> None:
-    _save({
-        "adds": 0,
-        "searches": 0,
-        "categories": [],
-        "category_counts": {},
-        "recent_ids": [],
-        "started": datetime.now().isoformat(),
-    })
+    _save(
+        {
+            "adds": 0,
+            "searches": 0,
+            "categories": [],
+            "category_counts": {},
+            "recent_ids": [],
+            "started": datetime.now().isoformat(),
+        }
+    )
 
 
 def record_add(category: str = "", memory_id: str = "") -> None:
@@ -84,8 +108,7 @@ def peek() -> str:
     return json.dumps(stats)
 
 
-def report() -> str:
-    stats = _load()
+def _format_report(stats: dict) -> str:
     adds = stats.get("adds", 0)
     searches = stats.get("searches", 0)
     categories = stats.get("categories", [])
@@ -104,6 +127,28 @@ def report() -> str:
         parts.append(f"Categories touched: {', '.join(categories)}")
 
     return ". ".join(parts) + "."
+
+
+def report() -> str:
+    return _format_report(_load())
+
+
+def report_for(user_id: str, project_id: str) -> str:
+    """Same as report(), but for an explicit user/project pair instead of
+    this process's own resolved identity.
+
+    STATS_FILE is a module-level constant resolved once at import time --
+    fine for every other caller here, which is always a fresh short-lived
+    subprocess (spawn_bg([... "session_stats.py", "add", cat])). The
+    daemon is different: it's one long-lived process shared by every
+    editor/project on the machine, so importing this module there would
+    freeze STATS_FILE to whichever project happened to be active on the
+    daemon's first call and silently reuse that path for every project
+    after. This bypasses STATS_FILE entirely so the daemon can call it
+    in-process (no subprocess-spawn overhead under its dispatch lock) with
+    the identity it already resolved for this specific request.
+    """
+    return _format_report(_load_from(_stats_file_for(user_id, project_id)))
 
 
 def main() -> int:
